@@ -67,6 +67,63 @@ def _build_note_index(notes_root: Path) -> dict[str, str]:
     return index
 
 
+def _safe_title_prefix(text: str) -> str:
+    """Reproduce build_review.py's safe_filename(clean_title(x))[:60] for split-table matching."""
+    text = re.sub(r'[\uFFFD\u200B-\u200D\u2060]+', "", str(text or ""))
+    text = re.sub(r"\s+", " ", text).strip(" .;:,")
+    text = re.sub(r'[:*?"<>|]', " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:60].strip()
+
+
+SPLIT_ROW_RE = re.compile(r"^\| ([^\|]+) \| (.+) \|$")
+SPLIT_LABELS = {"必读", "值得看", "可跳过"}
+
+
+def _backfill_split_table(lines: list[str], title_to_note: dict[str, str]) -> int:
+    """Replace truncated title entries in the split table with [[NoteLink]] where notes exist.
+
+    The split table rows have the form:
+      | 必读 | TitlePrefix（hint） · TitlePrefix（hint） |
+
+    We match each entry by its title prefix (first 60 safe-filename chars) and replace
+    matching entries with [[NoteStem]]（hint）.
+
+    Returns the number of cell entries replaced.
+    """
+    replaced = 0
+    for i, line in enumerate(lines):
+        m = SPLIT_ROW_RE.match(line)
+        if not m:
+            continue
+        label = m.group(1).strip()
+        if label not in SPLIT_LABELS:
+            continue
+        cell = m.group(2)
+        entries = [e.strip() for e in cell.split(" · ")]
+        new_entries = []
+        changed = False
+        for entry in entries:
+            if entry.startswith("[["):
+                new_entries.append(entry)
+                continue
+            matched_note = None
+            for prefix, note_stem in title_to_note.items():
+                if entry.startswith(prefix):
+                    matched_note = note_stem
+                    remainder = entry[len(prefix):]
+                    break
+            if matched_note:
+                new_entries.append(f"[[{matched_note}]]{remainder}")
+                changed = True
+                replaced += 1
+            else:
+                new_entries.append(entry)
+        if changed:
+            lines[i] = f"| {label} | {' · '.join(new_entries)} |"
+    return replaced
+
+
 def _section_blocks(content: str) -> list[tuple[int, int, str]]:
     """Return (start, end, header) for each ### N. block in content."""
     lines = content.split("\n")
@@ -99,13 +156,13 @@ def backfill(report_date: str) -> int:
     content = report_path.read_text(encoding="utf-8-sig")
     lines   = content.split("\n")
     inserted = 0
+    title_to_note: dict[str, str] = {}   # safe_prefix → note_stem (for split-table update)
 
     blocks = _section_blocks(content)
     for start, end, header in blocks:
         # Check if note link already present in this block
         block_lines = lines[start : end + 1]
-        if any(NOTE_LINK_RE.match(ln) for ln in block_lines):
-            continue  # already has note link
+        already_has_link = any(NOTE_LINK_RE.match(ln) for ln in block_lines)
 
         # Extract paper ID from  - ID: `xxx`  line
         paper_id = ""
@@ -154,6 +211,16 @@ def backfill(report_date: str) -> int:
         if not note_stem:
             continue
 
+        # Build title→note mapping for split-table update (always, regardless of already_has_link)
+        title_m = re.match(r"^###\s+\d+\.\s+(.+)$", header)
+        if title_m:
+            prefix = _safe_title_prefix(title_m.group(1))
+            if prefix:
+                title_to_note[prefix] = note_stem
+
+        if already_has_link:
+            continue  # skip inserting duplicate detail link
+
         # Insert after the  - 链接:  line, or after  - ID:  line
         insert_after = -1
         for rel_idx, ln in enumerate(block_lines):
@@ -178,12 +245,22 @@ def backfill(report_date: str) -> int:
         inserted += 1
         print(f"  [backfill] {paper_id} → [[{note_stem}]]")
 
-    if inserted > 0:
+    # Also update the split table (## 分流表) with wiki-links where notes exist
+    split_replaced = 0
+    if title_to_note:
+        split_replaced = _backfill_split_table(lines, title_to_note)
+        if split_replaced:
+            print(f"  [backfill] split-table: replaced {split_replaced} entries with wiki-links")
+
+    if inserted > 0 or split_replaced > 0:
         report_path.write_text("\n".join(lines), encoding="utf-8-sig")
-        print(f"[backfill] Inserted {inserted} note links into {report_path.name}")
+        if inserted > 0:
+            print(f"[backfill] Inserted {inserted} note links into {report_path.name}")
+        if split_replaced > 0:
+            print(f"[backfill] Updated {split_replaced} split-table entries in {report_path.name}")
     else:
         print("[backfill] No new links to insert.")
-    return inserted
+    return inserted + split_replaced
 
 
 def main() -> int:

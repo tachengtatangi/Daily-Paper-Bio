@@ -4164,7 +4164,9 @@ def parse_sections_output(raw: str) -> dict | None:
             return None
         if not required.issubset(obj):
             return None
-        return {key: sanitize_model_text(obj.get(key, "")) for key in SECTION_KEYS}
+        result = {key: sanitize_model_text(obj.get(key, "")) for key in SECTION_KEYS}
+        result["related_concepts"] = _normalize_related_concepts(result["related_concepts"])
+        return result
 
     try:
         parsed = json.loads(raw)
@@ -4271,6 +4273,23 @@ def sanitize_model_text(text: object) -> str:
     cleaned = try_repair_mojibake(cleaned)
     cleaned = cleaned.replace("\ufeff", "").strip()
     return cleaned
+
+
+def _normalize_related_concepts(text: str) -> str:
+    """Ensure each [[concept]] wiki-link occupies its own line.
+
+    LLMs sometimes output all concepts inline as:
+      - [[A]] - [[B]] - [[C]]
+    This function expands that into:
+      - [[A]]
+      - [[B]]
+      - [[C]]
+    """
+    if "]] - [[" not in text:
+        return text
+    # Split on "]] - [[" boundary → each [[concept]] on its own line
+    text = re.sub(r"\]\]\s*-\s*\[\[", "]]\n- [[", text)
+    return text.strip()
 
 
 def run_codex_prompt(prompt: str, cwd: Path, tmp_dir: Path, timeout: int = 900):
@@ -4467,9 +4486,9 @@ def build_generation_prompt(material_path: Path, mode: str) -> str:
         "11. figure_takeaways 要结合 figure_items 和 figure_paths；如果图注可用，就解释图像支持了什么结论，图像为何重要；不要输出 path: / caption: / takeaway: 这类中间字段。\n"
         "12. quick_reference 要写成 3-5 条短的检查清单式条目；每条必须单独占一行（用真实换行符分隔），不要在同一行内用 ' - ' 连缀多条。\n"
         "13. strengths 和 limitations 每条也必须单独占一行，不要内联连缀。\n"
-        "14. related_concepts 尽量给出 Obsidian 链接形式的相关概念，比如 [[comparative genomics]]。\n"
+        "14. related_concepts 给出 Obsidian 链接形式，每个概念必须单独占一行，格式严格为 - [[概念名]]，不要在同一行内用 ' - ' 连缀多个概念，例如正确格式：\n- [[comparative genomics]]\n- [[regulatory evolution]]\n"
         "15. notes 要写成可复用的研究笔记，而不是泛泛而谈的概述，优先用 bullet；每条单独占一行。\n"
-        "16. 不要编造 materials.json 里没有的事实；不确定就明确写\"不足以确认\"。\n"
+        "16. 不要编造 materials.json 里没有的事实；不确定就明确写\"不足以确认\"。特别注意：物种学名、基因名、新发现的命名（如 sp. nov.）、具体统计数字，必须只来自当前材料，绝不能依赖训练记忆补全。\n"
         "17. 如果需要引用英文术语，保持最小化，不要让整句变成英文。\n"
         "18. 在 main_findings 和 quick_reference 中，对最关键的基因名、物种名、方法名或定量数值用 **加粗** 标注；每条最多加粗 1-2 处，不要滥用。\n"
         "19. 输出只允许一个 JSON 对象，且键必须严格是：\n"
