@@ -790,12 +790,16 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
         # 2. History/PubMedPubDate[@PubStatus="pubmed"] — when PubMed indexed the record.
         # 3. JournalIssue/PubDate — print publication date (may be months in the future).
         epub_date = ""
-        epub_node = article_node.find("ArticleDate[@DateType='Electronic']")
-        if epub_node is not None:
-            year = text_or_empty(epub_node.find("Year"))
-            month = text_or_empty(epub_node.find("Month"))
-            day = text_or_empty(epub_node.find("Day"))
-            epub_date = "-".join(part for part in [year, month, day] if part)
+        # ElementTree does not support [@attr='value'] XPath syntax —
+        # iterate all ArticleDate nodes and filter by attrib.
+        for _ad in article_node.findall("ArticleDate"):
+            if _ad.attrib.get("DateType") == "Electronic":
+                year = text_or_empty(_ad.find("Year"))
+                month = text_or_empty(_ad.find("Month"))
+                day = text_or_empty(_ad.find("Day"))
+                epub_date = "-".join(part for part in [year, month, day] if part)
+                if epub_date:
+                    break
 
         entrez_date = ""
         if pubmed is not None:

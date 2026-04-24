@@ -682,13 +682,19 @@ async def _run_patchright_pipeline(
 
     # ── Prefer user's real Chrome profile so institutional cookies are available ──
     # Priority:
-    #   1. User's default Chrome User Data directory (carries cookies/login)
-    #   2. Temp directory fallback (no cookies, but always works)
-    # If Chrome is already running with the same profile, the subprocess will
-    # silently delegate to the existing process; _wait_for_cdp handles the timeout.
+    #   1. User's default Chrome User Data directory, if Chrome is NOT currently
+    #      running (no SingletonLock).  Carries cookies / institutional login.
+    #   2. Temp directory fallback — always safe; no cookies.
+    # Rationale for SingletonLock check: if Chrome is already running with that
+    # profile, launching a second instance with --remote-debugging-port will
+    # silently delegate the URL to the existing Chrome and then exit, leaving
+    # our CDP port unbound.  _wait_for_cdp would timeout.  Falling back to a
+    # temp profile avoids the conflict (at the cost of no institutional cookies
+    # for that one call).
     _local_app_data = os.environ.get("LOCALAPPDATA", "")
     _real_profile = os.path.join(_local_app_data, "Google", "Chrome", "User Data") if _local_app_data else ""
-    if _real_profile and os.path.isdir(_real_profile):
+    _profile_in_use = os.path.exists(os.path.join(_real_profile, "SingletonLock")) if _real_profile else False
+    if _real_profile and os.path.isdir(_real_profile) and not _profile_in_use:
         user_data_dir = _real_profile
     else:
         tmp = os.path.join(tempfile.gettempdir(), f"pdf_fetcher_cdp_{port}")
