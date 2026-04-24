@@ -3895,6 +3895,27 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
     }
 
 
+_REFERENCES_HEADER_RE = re.compile(
+    r'\n(?:References|REFERENCES|Bibliography|BIBLIOGRAPHY|Works Cited|参考文献)\s*\n',
+)
+
+
+def _truncate_before_references(text: str, max_chars: int = 48000) -> str:
+    """Truncate full text before the References / Bibliography section.
+
+    Reference lists rarely add analytical value and inflate token count.
+    The heading must appear in the latter 70% of the text to rule out
+    false positives like 'see the References section' in the body.
+    Falls back to the hard character limit if no heading is found.
+    """
+    if len(text) <= max_chars:
+        return text
+    m = _REFERENCES_HEADER_RE.search(text)
+    if m and m.start() >= len(text) * 0.30:
+        return text[:m.start()]
+    return text[:max_chars]
+
+
 def build_materials_payload(record: dict, source: str, mode: str) -> dict:
     links = source_links(record, source)
 
@@ -3944,7 +3965,7 @@ def build_materials_payload(record: dict, source: str, mode: str) -> dict:
             "pdf_path": _path_name(links["pdf_path"]),
         },
         "abstract": record.get("abstract", ""),
-        "full_text_excerpt": (record.get("full_text", "") or "")[:48000],
+        "full_text_excerpt": _truncate_before_references(record.get("full_text", "") or ""),
     }
 
 
@@ -4515,14 +4536,15 @@ def build_generation_prompt(material_path: Path, mode: str) -> str:
         "9. background_context 要解释\"为什么这个问题值得研究\"，不要只复述题目。\n"
         "10. main_findings 最多 5 条，优先写具体结果、比较对象、机制、数据集或样本信息；不要输出 finding: / basis: 这类中间字段；每条必须单独占一行（用真实换行符分隔），不要在同一行内用 ' - ' 连缀多条。\n"
         "11. figure_takeaways 要结合 figure_items 和 figure_paths；如果图注可用，就解释图像支持了什么结论，图像为何重要；不要输出 path: / caption: / takeaway: 这类中间字段。\n"
-        "12. quick_reference 要写成 3-5 条短的检查清单式条目；每条必须单独占一行（用真实换行符分隔），不要在同一行内用 ' - ' 连缀多条。\n"
-        "13. strengths 和 limitations 每条也必须单独占一行，不要内联连缀。\n"
-        "14. related_concepts 给出 Obsidian 链接形式，每个概念必须单独占一行，格式严格为 - [[概念名]]，不要在同一行内用 ' - ' 连缀多个概念，例如正确格式：\n- [[comparative genomics]]\n- [[regulatory evolution]]\n"
-        "15. notes 要写成可复用的研究笔记，而不是泛泛而谈的概述，优先用 bullet；每条单独占一行。\n"
-        "16. 不要编造 materials.json 里没有的事实；不确定就明确写\"不足以确认\"。特别注意：物种学名、基因名、新发现的命名（如 sp. nov.）、具体统计数字，必须只来自当前材料，绝不能依赖训练记忆补全。\n"
-        "17. 如果需要引用英文术语，保持最小化，不要让整句变成英文。\n"
-        "18. 在 main_findings 和 quick_reference 中，对最关键的基因名、物种名、方法名或定量数值用 **加粗** 标注；每条最多加粗 1-2 处，不要滥用。\n"
-        "19. 输出只允许一个 JSON 对象，且键必须严格是：\n"
+        "12. data_materials 只描述数据来源、样本规模、实验材料和证据层级；不要把 DOI、URL、文件名或文件路径重复写出来，这些已经在 Metadata 表格里展示了。\n"
+        "13. quick_reference 要写成 3-5 条短的检查清单式条目；每条必须单独占一行（用真实换行符分隔），不要在同一行内用 ' - ' 连缀多条。\n"
+        "14. strengths 和 limitations 每条也必须单独占一行，不要内联连缀。\n"
+        "15. related_concepts 给出 Obsidian 链接形式，每个概念必须单独占一行，格式严格为 - [[概念名]]，不要在同一行内用 ' - ' 连缀多个概念，例如正确格式：\n- [[comparative genomics]]\n- [[regulatory evolution]]\n"
+        "16. notes 要写成可复用的研究笔记，而不是泛泛而谈的概述，优先用 bullet；每条单独占一行。\n"
+        "17. 不要编造 materials.json 里没有的事实；不确定就明确写\"不足以确认\"。特别注意：物种学名、基因名、新发现的命名（如 sp. nov.）、具体统计数字，必须只来自当前材料，绝不能依赖训练记忆补全。\n"
+        "18. 如果需要引用英文术语，保持最小化，不要让整句变成英文。\n"
+        "19. 在 main_findings 和 quick_reference 中，对最关键的基因名、物种名、方法名或定量数值用 **加粗** 标注；每条最多加粗 1-2 处，不要滥用。\n"
+        "20. 输出只允许一个 JSON 对象，且键必须严格是：\n"
         "paper_topic, one_sentence_summary, background_context, research_question, data_materials, core_methods, main_findings, figure_takeaways, strengths, limitations, critical_analysis, related_concepts, quick_reference, notes\n"
     )
 def build_rewrite_prompt(material_path: Path, draft_path: Path, mode: str) -> str:
