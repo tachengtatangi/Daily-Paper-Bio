@@ -35,10 +35,6 @@
 
 {main_findings}
 
-## Figure Takeaways
-
-{figure_takeaways}
-
 ## Figures
 
 {figures}

@@ -3897,6 +3897,27 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
 
 def build_materials_payload(record: dict, source: str, mode: str) -> dict:
     links = source_links(record, source)
+
+    def _path_name(p: str) -> str:
+        """Return just the filename for a local filesystem path.
+
+        Windows paths with non-ASCII directory components (e.g. Chinese
+        characters in 桌面/Documents) cause mojibake when the Codex subprocess
+        reads the materials.json with the system's default ANSI/GBK encoding
+        on Chinese Windows instead of UTF-8.  Sending only the filename (which
+        is always ASCII for DOI-derived stems) avoids the encoding hazard while
+        still letting the LLM know which file is available.  URLs are passed
+        through unchanged.
+        """
+        if not p:
+            return ""
+        if p.startswith(("http://", "https://")):
+            return p
+        try:
+            return Path(p).name
+        except Exception:
+            return p
+
     return {
         "source": source,
         "mode": mode,
@@ -3914,11 +3935,13 @@ def build_materials_payload(record: dict, source: str, mode: str) -> dict:
             "image_url": record.get("image_url", ""),
             "full_text_links": record.get("full_text_links", []),
             "full_text_status": record.get("full_text_status", ""),
-            "downloaded_pdf": record.get("downloaded_pdf", ""),
+            # Only send filenames, not full paths — prevents mojibake when
+            # Codex reads materials.json with a non-UTF-8 system encoding.
+            "downloaded_pdf": _path_name(record.get("downloaded_pdf", "")),
             "figure_items": record.get("figure_items", []),
-            "figure_paths": record.get("figure_paths", []),
+            "figure_paths": [_path_name(p) for p in (record.get("figure_paths") or [])],
             "web_url": links["web_url"],
-            "pdf_path": links["pdf_path"],
+            "pdf_path": _path_name(links["pdf_path"]),
         },
         "abstract": record.get("abstract", ""),
         "full_text_excerpt": (record.get("full_text", "") or "")[:48000],
@@ -5354,34 +5377,26 @@ def _parse_takeaway_bullets(figure_takeaways: str) -> list[str]:
 
 
 def build_figures_section(record: dict, note_path: Path, figure_takeaways: str = "") -> str:
-    """Render the single best figure, paired with its matching takeaway bullet.
+    """Render the ## Figures section: image embed followed by full figure analysis.
 
-    Each figure image is followed immediately by its corresponding Chinese
-    takeaway description so readers see image and interpretation together.
-    The full figure_takeaways text is also shown separately in the
-    '## Figure Takeaways' template section — this function does NOT duplicate
-    all bullets, it only inlines the one matching each figure.
+    The ## Figure Takeaways section has been removed from the template.
+    All figure analysis text is now shown inline in ## Figures:
+    - With an image: embed it first, then the full analysis below.
+    - Without an image: show only the analysis text.
+    - Neither available: show a placeholder.
     """
     figures = pick_top_figures(record, max_n=1)
-    takeaway_bullets = _parse_takeaway_bullets(figure_takeaways)
     rendered: list[str] = []
 
-    for idx, item in enumerate(figures):
+    for item in figures:
         embed = _render_one_figure(item, note_path)
         rendered.append(embed)
 
-        # Pair with takeaway: use index-matched bullet if available, else caption
-        if idx < len(takeaway_bullets):
-            desc = sanitize_figure_summary_text(takeaway_bullets[idx], record)
-            if desc:
-                rendered.append(f"中文说明：{desc}")
-        else:
-            caption = normalize_whitespace(item.get("caption", "") or item.get("alt", ""))
-            if caption:
-                if count_cjk_chars(caption) < 10 and count_latin_tokens(caption) > 6:
-                    rendered.append("中文说明：这张图对应论文中的关键图像，图注细节需要结合正文进一步核对。")
-                else:
-                    rendered.append(f"中文说明：{caption}")
+    # Append the full figure analysis (previously the ## Figure Takeaways section)
+    if figure_takeaways:
+        analysis = render_figure_takeaways_text(figure_takeaways)
+        if analysis:
+            rendered.append(analysis)
 
     return "\n\n".join(rendered) if rendered else "当前没有稳定提取到可展示的图像。"
 
