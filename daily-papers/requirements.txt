@@ -1,0 +1,36 @@
+# DailyPaper Skills — Python dependencies
+#
+# 一键安装（paper-reader + daily-papers 全部依赖都在这里）：
+#   pip install -r requirements.txt
+#
+# 可选（抓闭源期刊付费全文，如 Elsevier/Springer/Wiley）：
+#   patchright install chromium
+#
+# 不装 patchright/chromium 也能正常使用：
+#   - 本地 PDF 路径 → pypdf/PyMuPDF 本地直接提取，不需要浏览器
+#   - PubMed / bioRxiv 开放论文 → PMC API，不需要浏览器
+#   - 闭源期刊付费文章 → 无法抓全文，自动退回摘要模式
+#
+# ─────────────────────────────────────────────────────────────────────────
+# 核心：license 校验（任何 skill 启动都会用到）
+cryptography>=41.0.0
+
+# ─────────────────────────────────────────────────────────────────────────
+# paper-reader — 本地 PDF 提取（必须）
+pypdf>=3.0.0           # PDF 文本与元数据提取
+PyMuPDF>=1.24.0        # PDF 图片 / Figure 1 提取（fitz）
+
+# paper-reader — 网页/出版社页面解析（必须）
+beautifulsoup4>=4.12.0 # HTML 解析
+trafilatura>=1.6.0     # 网页正文提取
+readability-lxml>=0.8.1 # 备用网页正文提取
+
+# paper-reader — 浏览器自动化（可选，仅闭源期刊付费全文需要）
+# patchright 是 playwright 的反反爬分支，优先用它；装不上可换 playwright
+patchright>=1.40.0
+
+# ─────────────────────────────────────────────────────────────────────────
+# daily-papers — 可选增强
+openpyxl>=3.1.0        # CAS 分区 Excel 读取（_shared/data/cas_quartiles_2025.xlsx）
+openai>=1.0.0          # LLM 兜底（Codex CLI 不可用时才用到）
+nltk>=3.8.0            # library_profile.py：从本地 PDF 库自动抽关键词（可选）
