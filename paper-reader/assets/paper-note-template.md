@@ -18,12 +18,9 @@
 
 > {one_sentence_summary}
 
-## Summary Mode
+## Summary & Analysis Mode
 
 - {summary_mode}
-
-## Analysis Mode
-
 - {analysis_mode}
 
 ## Research Question

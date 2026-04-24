@@ -4276,20 +4276,28 @@ def sanitize_model_text(text: object) -> str:
 
 
 def _normalize_related_concepts(text: str) -> str:
-    """Ensure each [[concept]] wiki-link occupies its own line.
+    """Ensure each [[concept]] wiki-link occupies its own bullet line.
 
-    LLMs sometimes output all concepts inline as:
-      - [[A]] - [[B]] - [[C]]
-    This function expands that into:
+    LLMs sometimes output concepts inline in two common patterns:
+      Pattern A (dash-separated):  - [[A]] - [[B]] - [[C]]
+      Pattern B (space-separated): [[A]] [[B]] [[C]]
+
+    Both are normalised to:
       - [[A]]
       - [[B]]
       - [[C]]
     """
-    if "]] - [[" not in text:
+    if not text or "[[" not in text:
         return text
-    # Split on "]] - [[" boundary → each [[concept]] on its own line
+    # Pattern A: "]] - [[" boundary
     text = re.sub(r"\]\]\s*-\s*\[\[", "]]\n- [[", text)
-    return text.strip()
+    # Pattern B: "]] [[" boundary (space-separated, no dash)
+    text = re.sub(r"\]\]\s+\[\[", "]]\n- [[", text)
+    # Ensure first item also has a leading bullet if not already present
+    text = text.strip()
+    if text.startswith("[["):
+        text = "- " + text
+    return text
 
 
 def run_codex_prompt(prompt: str, cwd: Path, tmp_dir: Path, timeout: int = 900):
@@ -4799,9 +4807,11 @@ def fetch_doi(doi: str) -> dict:
     should_try_browser = (
         (not raw)
         or publisher_page_blocked(meta.get("title", ""), meta.get("full_text", ""))
+        or page_is_cookie_wall(meta.get("title", ""), meta.get("full_text", ""))
+        or (not is_elsevier_doi(doi) and not looks_like_full_article(meta.get("title", ""), meta.get("full_text", "")))
         or (is_elsevier_doi(doi) and (not meta.get("downloaded_pdf") or not meta.get("figure_paths") or not browser_record_has_fulltext(meta)))
     )
-    if should_try_browser:
+    if should_try_browser and not SKIP_PLAYWRIGHT:
         # ── Try patchright-based PDF fetcher first (bot-detection bypass) ──────
         _pf_succeeded = False
         try:
