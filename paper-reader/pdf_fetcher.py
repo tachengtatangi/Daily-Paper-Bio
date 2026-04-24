@@ -679,14 +679,26 @@ async def _run_patchright_pipeline(
 
     known_domains = _auto_known_domains(article_url)
     port   = _find_free_port(9240)
-    tmp    = os.path.join(tempfile.gettempdir(),
-                          f"pdf_fetcher_cdp_{port}")
-    os.makedirs(tmp, exist_ok=True)
+
+    # ── Prefer user's real Chrome profile so institutional cookies are available ──
+    # Priority:
+    #   1. User's default Chrome User Data directory (carries cookies/login)
+    #   2. Temp directory fallback (no cookies, but always works)
+    # If Chrome is already running with the same profile, the subprocess will
+    # silently delegate to the existing process; _wait_for_cdp handles the timeout.
+    _local_app_data = os.environ.get("LOCALAPPDATA", "")
+    _real_profile = os.path.join(_local_app_data, "Google", "Chrome", "User Data") if _local_app_data else ""
+    if _real_profile and os.path.isdir(_real_profile):
+        user_data_dir = _real_profile
+    else:
+        tmp = os.path.join(tempfile.gettempdir(), f"pdf_fetcher_cdp_{port}")
+        os.makedirs(tmp, exist_ok=True)
+        user_data_dir = tmp
 
     proc = subprocess.Popen(
         [chrome_exe,
          f"--remote-debugging-port={port}",
-         f"--user-data-dir={tmp}",
+         f"--user-data-dir={user_data_dir}",
          "--no-first-run", "--no-default-browser-check",
          article_url],
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),

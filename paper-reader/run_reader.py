@@ -3427,86 +3427,6 @@ def extract_pdf_text_from_bytes(data: bytes, temp_pdf_path: Path | None = None) 
     return normalize_whitespace(" ".join(chunks))[:25000]
 
 
-def fetch_doi(doi: str) -> dict:
-    doi = parse_doi_candidate(doi)
-    if not doi:
-        return {}
-    url = f"https://doi.org/{quote(doi, safe='/')}"
-    raw = ""
-    try:
-        raw = fetch_url(url).decode("utf-8", errors="replace")
-    except Exception:
-        pass
-    meta = parse_html_metadata(url, raw) if raw else {
-        "source_kind": "doi",
-        "title": "",
-        "authors": [],
-        "journal": "",
-        "pmid": "",
-        "doi": doi,
-        "pubmed_url": "",
-        "doi_url": url,
-        "abstract": "",
-        "affiliations": [],
-        "keywords": [],
-        "full_text": "",
-        "summary_mode": "基于 DOI 元数据",
-        "image_url": "",
-    }
-
-    openalex_meta = fetch_openalex_by_doi(doi)
-    if openalex_meta:
-        meta = merge_records(meta, openalex_meta, prefer_new=False)
-
-    should_try_browser = (
-        (not raw)
-        or publisher_page_blocked(meta.get("title", ""), meta.get("full_text", ""))
-        or (meta.get("title", "") == "Just a moment...")
-    )
-    if should_try_browser:
-        browser_meta = fetch_web_with_playwright(url, headed=PREFER_VISIBLE_BROWSER)
-        redirect_url = normalize_whitespace(browser_meta.get("web_url", "")) if browser_meta else ""
-        if (not browser_record_has_fulltext(browser_meta)) and redirect_url and redirect_url != url and "doi.org/" not in redirect_url.lower():
-            retried = fetch_web_with_playwright(redirect_url, headed=PREFER_VISIBLE_BROWSER)
-            if browser_record_has_fulltext(retried):
-                browser_meta = retried
-            elif retried:
-                browser_meta = merge_records(browser_meta or {}, retried, prefer_new=True)
-        if browser_record_has_fulltext(browser_meta):
-            preserve_elsevier_api = (
-                is_elsevier_doi(doi)
-                and normalize_whitespace(str(meta.get("full_text_status", "") or "")).lower() == "elsevier_api"
-                and summary_mode_indicates_fulltext(meta)
-            )
-            meta = merge_records(meta, browser_meta, prefer_new=not preserve_elsevier_api)
-            if preserve_elsevier_api:
-                meta["summary_mode"] = normalize_whitespace(str(meta.get("summary_mode", "") or "")) or "基于 Elsevier API 全文/XML"
-                meta["acquisition_path"] = normalize_whitespace(str(meta.get("acquisition_path", "") or "")) or "Elsevier API(view=FULL)"
-                meta["source_kind"] = "doi"
-                if normalize_whitespace(str(meta.get("web_url", "") or "")).lower().startswith("https://www.cell.com/"):
-                    preferred_web = normalize_whitespace(str(browser_meta.get("web_url", "") or ""))
-                    if "sciencedirect.com" in preferred_web.lower():
-                        meta["web_url"] = preferred_web
-            if browser_meta.get("pdf_url"):
-                try:
-                    meta = merge_records(meta, fetch_pdf_url(browser_meta["pdf_url"]), prefer_new=False)
-                except Exception:
-                    pass
-        elif browser_meta.get("pdf_url"):
-            try:
-                meta = merge_records(meta, fetch_pdf_url(browser_meta["pdf_url"]), prefer_new=False)
-            except Exception:
-                pass
-    meta["doi"] = doi
-    meta["doi_url"] = url
-    pubmed_meta = fetch_pubmed_by_doi(doi)
-    if pubmed_meta:
-        meta = merge_records(meta, pubmed_meta, prefer_new=False)
-        if pubmed_meta.get("full_text") or pubmed_meta.get("downloaded_pdf"):
-            meta = merge_fulltext_record(meta, pubmed_meta)
-    return meta
-
-
 def fetch_pdf_url(url: str, referer: str = "") -> dict:
     data = fetch_url(
         url,
@@ -4544,7 +4464,9 @@ def build_generation_prompt(material_path: Path, mode: str) -> str:
         "17. 不要编造 materials.json 里没有的事实；不确定就明确写\"不足以确认\"。特别注意：物种学名、基因名、新发现的命名（如 sp. nov.）、具体统计数字，必须只来自当前材料，绝不能依赖训练记忆补全。\n"
         "18. 如果需要引用英文术语，保持最小化，不要让整句变成英文。\n"
         "19. 在 main_findings 和 quick_reference 中，对最关键的基因名、物种名、方法名或定量数值用 **加粗** 标注；每条最多加粗 1-2 处，不要滥用。\n"
-        "20. 输出只允许一个 JSON 对象，且键必须严格是：\n"
+        "20. 当 summary_mode 包含"摘要"或"元数据"时（即只有摘要可用），必须基于 abstract 字段的实际内容填写 research_question、background_context、core_methods、main_findings 等字段；"
+        "绝不能把标题原文嵌入任何分析字段作为占位符；如果摘要对某项内容确实无法回答，要写具体的不确定说明，例如"摘要未说明具体样本量"，而不是用标题文本填充。\n"
+        "21. 输出只允许一个 JSON 对象，且键必须严格是：\n"
         "paper_topic, one_sentence_summary, background_context, research_question, data_materials, core_methods, main_findings, figure_takeaways, strengths, limitations, critical_analysis, related_concepts, quick_reference, notes\n"
     )
 def build_rewrite_prompt(material_path: Path, draft_path: Path, mode: str) -> str:
@@ -4576,7 +4498,9 @@ def build_rewrite_prompt(material_path: Path, draft_path: Path, mode: str) -> st
         "14. 如果英文学术术语无法自然翻成中文，可以保留最小必要英文，但整句必须是中文。\n"
         "15. 不要编造 materials.json 里没有的事实；只在已有证据上重写和润色。\n"
         "16. 在 main_findings 和 quick_reference 中，对最关键的基因名、物种名、方法名或定量数值用 **加粗** 标注；每条最多加粗 1-2 处，不要滥用。\n"
-        "17. 输出只允许一个 JSON 对象，且键严格是：\n"
+        "17. 当 summary_mode 包含"摘要"或"元数据"时，只有摘要可用；必须基于 abstract 字段的实际内容填写各分析字段；绝不可把标题原文嵌入 research_question 或 background_context 作为占位符；"
+        "如果摘要确实不足以回答某项内容，写具体说明如"摘要未说明样本量"，而不是套用标题。\n"
+        "18. 输出只允许一个 JSON 对象，且键严格是：\n"
         "paper_topic, one_sentence_summary, background_context, research_question, data_materials, core_methods, main_findings, figure_takeaways, strengths, limitations, critical_analysis, related_concepts, quick_reference, notes\n"
     )
 def is_elsevier_doi(doi: str) -> bool:

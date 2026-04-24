@@ -782,22 +782,41 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
                 )
                 continue
 
-        pub_date = ""
+        # Date priority:
+        # 1. ArticleDate[@DateType="Electronic"] — epub/online date; matches pdat esearch window.
+        #    Papers found by "datetype=pdat mindate=2025-01-31" have their epub date in that
+        #    range, even if the journal issue date says "2025-May".  Displaying the epub date
+        #    avoids the confusing mismatch between the search window and the shown date.
+        # 2. History/PubMedPubDate[@PubStatus="pubmed"] — when PubMed indexed the record.
+        # 3. JournalIssue/PubDate — print publication date (may be months in the future).
+        epub_date = ""
+        epub_node = article_node.find("ArticleDate[@DateType='Electronic']")
+        if epub_node is not None:
+            year = text_or_empty(epub_node.find("Year"))
+            month = text_or_empty(epub_node.find("Month"))
+            day = text_or_empty(epub_node.find("Day"))
+            epub_date = "-".join(part for part in [year, month, day] if part)
+
+        entrez_date = ""
+        if pubmed is not None:
+            for hist in pubmed.findall("History/PubMedPubDate"):
+                if hist.attrib.get("PubStatus") in {"pubmed", "entrez"}:
+                    year = text_or_empty(hist.find("Year"))
+                    month = text_or_empty(hist.find("Month"))
+                    day = text_or_empty(hist.find("Day"))
+                    entrez_date = "-".join(part for part in [year, month, day] if part)
+                    if entrez_date:
+                        break
+
+        journal_pub_date = ""
         pubdate_node = article_node.find("Journal/JournalIssue/PubDate")
         if pubdate_node is not None:
             year = text_or_empty(pubdate_node.find("Year"))
             month = text_or_empty(pubdate_node.find("Month"))
             day = text_or_empty(pubdate_node.find("Day"))
-            pub_date = "-".join(part for part in [year, month, day] if part)
-        if not pub_date and pubmed is not None:
-            for hist in pubmed.findall("History/PubMedPubDate"):
-                if hist.attrib.get("PubStatus") in {"pubmed", "entrez", "medline"}:
-                    year = text_or_empty(hist.find("Year"))
-                    month = text_or_empty(hist.find("Month"))
-                    day = text_or_empty(hist.find("Day"))
-                    pub_date = "-".join(part for part in [year, month, day] if part)
-                    if pub_date:
-                        break
+            journal_pub_date = "-".join(part for part in [year, month, day] if part)
+
+        pub_date = epub_date or entrez_date or journal_pub_date
 
         doi = ""
         pmc_id = ""
