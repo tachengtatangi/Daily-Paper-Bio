@@ -173,7 +173,7 @@ def _build_split_table(sections: dict[str, list[dict]], note_cache: dict[int, st
                 # 尚未生成笔记 → 纯文本，不显示下划线
                 title = clean_title(paper.get("title", ""))
                 short_title = safe_filename(title)[:60].strip()
-                entry = short_title if short_title else (pid or "unknown")
+                entry = short_title if short_title else (paper.get("id") or paper.get("pmid") or "unknown")
             items.append(f"{entry}（{hint}）" if hint else entry)
         rows.append(f"| {label} | {' · '.join(items)} |")
     return [

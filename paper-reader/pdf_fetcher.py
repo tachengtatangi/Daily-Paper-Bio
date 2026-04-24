@@ -135,7 +135,9 @@ _CF_MARKERS = [
 
 
 def _auto_known_domains(url: str) -> list[str]:
-    netloc = urlparse(url).netloc.lower().lstrip("www.")
+    netloc = urlparse(url).netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
     for key, domains in _PUBLISHER_DOMAIN_MAP.items():
         if key in netloc:
             return domains

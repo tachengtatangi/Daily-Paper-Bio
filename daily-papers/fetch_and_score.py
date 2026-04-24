@@ -1221,7 +1221,11 @@ def main():
     if override_keywords:
         KEYWORDS = override_keywords
 
-    target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else datetime.now().date()
+    if args.date:
+        _dp = args.date.split("-")
+        target_date = date(int(_dp[0]), int(_dp[1]), int(_dp[2]))
+    else:
+        target_date = datetime.now().date()
     days = max(1, args.days)
     start_date = target_date - timedelta(days=days - 1)
     top_n = TOP_N * days

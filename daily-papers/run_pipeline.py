@@ -222,7 +222,8 @@ def main() -> int:
     parser.add_argument("--refresh-profile", action="store_true")
     args = parser.parse_args()
 
-    target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+    _dp = args.date.split("-")
+    target_date = date(int(_dp[0]), int(_dp[1]), int(_dp[2]))
     days = max(1, args.days)
     start_date = target_date - timedelta(days=days - 1)
 

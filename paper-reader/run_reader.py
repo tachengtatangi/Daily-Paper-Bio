@@ -3879,7 +3879,11 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
                 "Revisit sample size, control design, statistics, and reproducibility after you return to the original paper." if mode == "critical" else "It is still worth checking sample size, controls, and statistics in the original paper.",
             ]
         ),
-        "related_concepts": "- [[comparative genomics]]\n- [[evolutionary genomics]]" if "genom" in summary_text.lower() else "- [[evolutionary biology]]",
+        "related_concepts": (
+            "\n".join(f"- [[{kw.strip()}]]" for kw in unique_keep_order(record.get("keywords", []))[:4])
+            if record.get("keywords")
+            else "- (Not enough information to identify related concepts reliably)"
+        ),
         "quick_reference": markdown_bullets(
             [
                 f"Evidence level: {record.get('summary_mode', 'unknown')}",
@@ -4420,7 +4424,11 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
         ),
         "limitations": markdown_bullets(limitations, fallback="当前可用信息还不足以支持更细的局限性判断。"),
         "critical_analysis": critical_analysis,
-        "related_concepts": "- [[comparative genomics]]\n- [[evolutionary genomics]]" if "genom" in summary_text.lower() else "- [[evolutionary biology]]",
+        "related_concepts": (
+            "\n".join(f"- [[{kw.strip()}]]" for kw in unique_keep_order(record.get("keywords", []))[:4])
+            if record.get("keywords")
+            else "- （当前可用信息不足以可靠确定相关概念）"
+        ),
         "quick_reference": markdown_bullets(
             [
                 f"证据层级：{evidence_level}",
@@ -5311,7 +5319,7 @@ def _parse_takeaway_bullets(figure_takeaways: str) -> list[str]:
     for line in render_figure_takeaways_text(figure_takeaways).splitlines():
         candidate = normalize_whitespace(line).lstrip("- *").strip()
         # Skip blank lines and lines that look like figure-number headers only
-        if candidate and not re.fullmatch(r"(?:Figure|?)\s*\d+", candidate, re.IGNORECASE):
+        if candidate and not re.fullmatch(r"(?:Figure|图)\s*\d+", candidate, re.IGNORECASE):
             bullets.append(candidate)
     return bullets
 
