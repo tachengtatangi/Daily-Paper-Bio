@@ -636,7 +636,7 @@ def pubmed_keyword_variants(keyword: str) -> list[str]:
     return unique_keep_case(variants)
 
 
-def pubmed_keyword_term(keywords: list[str]) -> str:
+def pubmed_keyword_terms(keywords: list[str]) -> list[str]:
     terms: list[str] = []
     for kw in unique_keep_case(keywords):
         for variant in pubmed_keyword_variants(kw):
@@ -645,14 +645,38 @@ def pubmed_keyword_term(keywords: list[str]) -> str:
                 terms.append(f'"{escaped}"[tiab]')
             else:
                 terms.append(f"{escaped}[tiab]")
-    return " OR ".join(terms)
+    return unique_keep_case(terms)
 
 
-def build_pubmed_supplemental_query() -> str:
-    keyword_term = pubmed_keyword_term(KEYWORDS)
-    if not keyword_term:
-        return ""
-    return f"({build_pubmed_query()}) AND ({keyword_term})"
+def pubmed_keyword_term(keywords: list[str]) -> str:
+    return " OR ".join(pubmed_keyword_terms(keywords))
+
+
+def build_pubmed_supplemental_queries(max_chars: int = 1400) -> list[str]:
+    """Build short PubMed supplemental queries to avoid HTTP 414.
+
+    E-utilities GET URLs can fail once a large variant-expanded OR clause is
+    encoded.  Keep each query comfortably short; duplicate PMIDs are deduped by
+    callers after all chunks are searched.
+    """
+    terms = pubmed_keyword_terms(KEYWORDS)
+    if not terms:
+        return []
+    prefix = f"({build_pubmed_query()}) AND ("
+    queries: list[str] = []
+    chunk: list[str] = []
+    chunk_len = len(prefix) + 1
+    for term in terms:
+        add_len = len(term) + (4 if chunk else 0)
+        if chunk and chunk_len + add_len > max_chars:
+            queries.append(prefix + " OR ".join(chunk) + ")")
+            chunk = []
+            chunk_len = len(prefix) + 1
+        chunk.append(term)
+        chunk_len += add_len
+    if chunk:
+        queries.append(prefix + " OR ".join(chunk) + ")")
+    return queries
 
 
 def iter_month_bounds(start_date: date, end_date: date):
@@ -674,21 +698,22 @@ def iter_month_bounds(start_date: date, end_date: date):
 
 
 def esearch_pubmed_monthly_supplement(start_date: date, end_date: date, retmax: int) -> list[str]:
-    supplemental_query = build_pubmed_supplemental_query()
-    if not supplemental_query:
+    supplemental_queries = build_pubmed_supplemental_queries()
+    if not supplemental_queries:
         return []
     all_ids: list[str] = []
     seen: set[str] = set()
     total_count = 0
     for month_start, month_end in iter_month_bounds(start_date, end_date):
-        extra_ids, extra_count = esearch_pubmed_query(supplemental_query, month_start, month_end, retmax)
-        total_count += extra_count
-        for pmid in extra_ids:
-            if pmid in seen:
-                continue
-            seen.add(pmid)
-            all_ids.append(pmid)
-    PUBMED_FETCH_STATS["supplemental_query"] = supplemental_query
+        for supplemental_query in supplemental_queries:
+            extra_ids, extra_count = esearch_pubmed_query(supplemental_query, month_start, month_end, retmax)
+            total_count += extra_count
+            for pmid in extra_ids:
+                if pmid in seen:
+                    continue
+                seen.add(pmid)
+                all_ids.append(pmid)
+    PUBMED_FETCH_STATS["supplemental_query"] = f"{len(supplemental_queries)} chunked keyword queries"
     PUBMED_FETCH_STATS["supplemental_esearch_count"] = total_count
     PUBMED_FETCH_STATS["supplemental_fetched_id_count"] = len(all_ids)
     print(
@@ -775,12 +800,11 @@ def esearch_pubmed(start_date, end_date, retmax: int) -> list[str]:
     print(f"  PubMed esearch returned {count} IDs, fetched {len(ids)} IDs", file=sys.stderr)
 
     if retmax > 0 and count > retmax and KEYWORDS:
-        supplemental_query = build_pubmed_supplemental_query()
-        if supplemental_query:
+        supplemental_queries = build_pubmed_supplemental_queries()
+        for supplemental_query in supplemental_queries:
             extra_ids, extra_count = esearch_pubmed_query(supplemental_query, start_date, end_date, retmax)
-            PUBMED_FETCH_STATS["supplemental_query"] = supplemental_query
-            PUBMED_FETCH_STATS["supplemental_esearch_count"] = extra_count
-            PUBMED_FETCH_STATS["supplemental_fetched_id_count"] = len(extra_ids)
+            PUBMED_FETCH_STATS["supplemental_esearch_count"] += extra_count
+            PUBMED_FETCH_STATS["supplemental_fetched_id_count"] += len(extra_ids)
             before = len(ids)
             ids = list(dict.fromkeys(ids + extra_ids))
             print(
@@ -788,6 +812,8 @@ def esearch_pubmed(start_date, end_date, retmax: int) -> list[str]:
                 f"added {len(ids) - before} unique IDs beyond broad cap",
                 file=sys.stderr,
             )
+        if supplemental_queries:
+            PUBMED_FETCH_STATS["supplemental_query"] = f"{len(supplemental_queries)} chunked keyword queries"
     return ids
 
 

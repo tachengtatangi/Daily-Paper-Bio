@@ -86,6 +86,16 @@ class KeywordMatchingTests(unittest.TestCase):
         variants = fs.pubmed_keyword_variants("convergent acquisition")
         self.assertIn("convergently acquired", [item.lower() for item in variants])
 
+    def test_pubmed_supplement_queries_are_chunked(self) -> None:
+        original = fs.KEYWORDS
+        try:
+            fs.KEYWORDS = [f"synthetic keyword {idx}" for idx in range(80)]
+            queries = fs.build_pubmed_supplemental_queries(max_chars=500)
+            self.assertGreater(len(queries), 1)
+            self.assertTrue(all(len(query) <= 520 for query in queries))
+        finally:
+            fs.KEYWORDS = original
+
 
 if __name__ == "__main__":
     unittest.main()
