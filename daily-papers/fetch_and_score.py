@@ -890,27 +890,18 @@ def paper_date_overlaps_window(date_text: str, start_date: date, end_date: date)
 
 
 def apply_pubmed_date_window(paper: dict, start_date: date, end_date: date) -> bool:
-    """Keep PubMed papers if any known publication date overlaps the window.
+    """Filter by PubMed's primary display date.
 
-    PubMed records often carry both an electronic publication date and an issue
-    date. Users usually mean the visible PubMed/issue date when they ask for a
-    date range, while `datetype=pdat` may still return records whose Epub date
-    is earlier. Do not drop such records solely because the preferred display
-    date is outside the requested window.
+    PubMed pages display the journal/issue date first, followed by Epub when it
+    exists, e.g. "2025 Aug 26; ... Epub 2025 Aug 7". For user-facing date
+    windows, that first display date is the right semantic anchor. Fall back to
+    Epub/Entrez only when no journal/issue date is available.
     """
-    candidates = [
-        str(item or "").strip()
-        for item in (paper.get("date_candidates") or [paper.get("date", "")])
-        if str(item or "").strip()
-    ]
-    if not candidates:
+    date_for_window = str(paper.get("date_for_window") or paper.get("date", "")).strip()
+    if not date_for_window:
         return True
-    for candidate in candidates:
-        if paper_date_overlaps_window(candidate, start_date, end_date):
-            if not paper_date_overlaps_window(str(paper.get("date", "")), start_date, end_date):
-                paper["date"] = candidate
-            return True
-    return False
+    paper["date"] = date_for_window
+    return paper_date_overlaps_window(date_for_window, start_date, end_date)
 
 
 def normalize_journal_for_lookup(journal: str) -> list[str]:
@@ -1102,7 +1093,9 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
             day = text_or_empty(pubdate_node.find("Day"))
             journal_pub_date = format_pubmed_date(year, month, day)
 
-        pub_date = epub_date or entrez_date or journal_pub_date
+        # Match PubMed's visible order: issue/journal date first, then Epub.
+        pub_date = journal_pub_date or epub_date or entrez_date
+        date_for_window = journal_pub_date or epub_date or entrez_date
         date_candidates = unique_keep_case([epub_date, entrez_date, journal_pub_date])
 
         doi = ""
@@ -1127,6 +1120,7 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
             "url": url,
             "pdf": pdf,
             "date": pub_date,
+            "date_for_window": date_for_window,
             "date_candidates": date_candidates,
             "score": 0,
             "category": journal,

@@ -40,7 +40,7 @@ class DateWindowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_range("2025-03-24", "2025-03-21")
 
-    def test_pubmed_issue_date_can_keep_epub_record(self) -> None:
+    def test_pubmed_primary_issue_date_controls_window(self) -> None:
         daily = ROOT / "daily-papers"
         if str(daily) not in sys.path:
             sys.path.insert(0, str(daily))
@@ -81,9 +81,20 @@ class DateWindowTests(unittest.TestCase):
 
         import fetch_and_score as fs
 
-        paper = {"date": "2025-08-07", "date_candidates": ["2025-08-07", "2025-08-26"]}
+        paper = {
+            "date": "2025-08-26",
+            "date_for_window": "2025-08-26",
+            "date_candidates": ["2025-08-07", "2025-08-26"],
+        }
         self.assertTrue(fs.apply_pubmed_date_window(paper, date(2025, 8, 26), date(2025, 8, 29)))
         self.assertEqual(paper["date"], "2025-08-26")
+
+        early_only = {
+            "date": "2025-08-07",
+            "date_for_window": "2025-08-07",
+            "date_candidates": ["2025-08-07", "2025-08-26"],
+        }
+        self.assertFalse(fs.apply_pubmed_date_window(early_only, date(2025, 8, 26), date(2025, 8, 29)))
 
 
 if __name__ == "__main__":
