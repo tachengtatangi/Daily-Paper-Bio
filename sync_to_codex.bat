@@ -19,6 +19,7 @@ xcopy /Y /E /Q "%SRC%\paper-reader\references\"  "%DST%\paper-reader\references\
 :: _shared
 xcopy /Y /Q "%SRC%\_shared\user-config.json"         "%DST%\_shared\"
 xcopy /Y /Q "%SRC%\_shared\user-config.local.json.example" "%DST%\_shared\"
+xcopy /Y /Q "%SRC%\_shared\README.md"                "%DST%\_shared\"
 xcopy /Y /Q "%SRC%\_shared\user_config.py"            "%DST%\_shared\"
 xcopy /Y /Q "%SRC%\_shared\date_window.py"            "%DST%\_shared\"
 xcopy /Y /Q "%SRC%\_shared\cas_quartiles.py"          "%DST%\_shared\"
