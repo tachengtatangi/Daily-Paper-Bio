@@ -27,20 +27,47 @@ description: |
 
 ## 时间范围
 
-按上游传入的 `--days N` 运行。未指定时默认当天。
+`fetch_and_score.py` 支持两个参数：
+
+| 参数 | 含义 |
+|------|------|
+| `--date YYYY-MM-DD` | 窗口的**结束日期**（含），默认今天 |
+| `--days N` | 往前覆盖几天，默认 1（即只取当天） |
+
+实际抓取窗口 = `[--date 那天 - (N-1) 天, --date 那天]`，使用 PubMed 的 `datetype=pdat`（电子发布日期）过滤。
+
+**把日期区间翻译成参数的方法：**
+
+```
+"YYYY-MM-DD 到 YYYY-MM-DD 的论文推荐"
+  → --date <结束日期> --days <结束日期减起始日期+1天>
+```
+
+示例：
+
+| 用户说的区间 | 对应参数 |
+|-------------|---------|
+| 2025-03-08 到 2025-03-10 | `--date 2025-03-10 --days 3` |
+| 2025-02-01 到 2025-02-03 | `--date 2025-02-03 --days 3` |
+| 仅 2025-03-10 当天 | `--date 2025-03-10 --days 1` |
+| 过去 7 天 | `--days 7`（不加 --date，自动取今天） |
+
+> **注意**：`--date` 控制 PubMed 搜索窗口的结束日期。
+> 如果用户说"2025-03-08 的论文"，用 `--date 2025-03-08 --days 1`；
+> 如果说"2025-03-08 到 2025-03-10"，用 `--date 2025-03-10 --days 3`。
 
 ## 执行顺序
 
 1. 运行抓取与打分：
 
 ```powershell
-python ..\daily-papers\fetch_and_score.py --days N
+python ..\daily-papers\fetch_and_score.py --date YYYY-MM-DD --days N
 ```
 
 如有临时关键词：
 
 ```powershell
-python ..\daily-papers\fetch_and_score.py --days N --keywords "kw1 kw2"
+python ..\daily-papers\fetch_and_score.py --date YYYY-MM-DD --days N --keywords "kw1 kw2"
 ```
 
 2. 确认 `{TEMP_DIR}\daily_papers_top30.json` 已写出。
