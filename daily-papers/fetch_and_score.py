@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
