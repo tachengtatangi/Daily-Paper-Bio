@@ -889,6 +889,30 @@ def paper_date_overlaps_window(date_text: str, start_date: date, end_date: date)
     return year_start <= end_date and year_end >= start_date
 
 
+def apply_pubmed_date_window(paper: dict, start_date: date, end_date: date) -> bool:
+    """Keep PubMed papers if any known publication date overlaps the window.
+
+    PubMed records often carry both an electronic publication date and an issue
+    date. Users usually mean the visible PubMed/issue date when they ask for a
+    date range, while `datetype=pdat` may still return records whose Epub date
+    is earlier. Do not drop such records solely because the preferred display
+    date is outside the requested window.
+    """
+    candidates = [
+        str(item or "").strip()
+        for item in (paper.get("date_candidates") or [paper.get("date", "")])
+        if str(item or "").strip()
+    ]
+    if not candidates:
+        return True
+    for candidate in candidates:
+        if paper_date_overlaps_window(candidate, start_date, end_date):
+            if not paper_date_overlaps_window(str(paper.get("date", "")), start_date, end_date):
+                paper["date"] = candidate
+            return True
+    return False
+
+
 def normalize_journal_for_lookup(journal: str) -> list[str]:
     raw = clean_display_text(journal)
     if not raw:
@@ -1079,6 +1103,7 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
             journal_pub_date = format_pubmed_date(year, month, day)
 
         pub_date = epub_date or entrez_date or journal_pub_date
+        date_candidates = unique_keep_case([epub_date, entrez_date, journal_pub_date])
 
         doi = ""
         pmc_id = ""
@@ -1102,6 +1127,7 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
             "url": url,
             "pdf": pdf,
             "date": pub_date,
+            "date_candidates": date_candidates,
             "score": 0,
             "category": journal,
             "source": "pubmed",
@@ -1461,11 +1487,7 @@ def fetch_pubmed_papers(start_date, end_date, days: int = 1) -> list[dict]:
                     print(f"  [WARN] efetch batch failed: {exc}", file=sys.stderr)
 
     before_date_filter = len(papers)
-    papers = [
-        paper
-        for paper in papers
-        if paper_date_overlaps_window(str(paper.get("date", "")), start_date, end_date)
-    ]
+    papers = [paper for paper in papers if apply_pubmed_date_window(paper, start_date, end_date)]
     removed_by_date = before_date_filter - len(papers)
     if removed_by_date:
         print(

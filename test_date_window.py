@@ -40,6 +40,51 @@ class DateWindowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_range("2025-03-24", "2025-03-21")
 
+    def test_pubmed_issue_date_can_keep_epub_record(self) -> None:
+        daily = ROOT / "daily-papers"
+        if str(daily) not in sys.path:
+            sys.path.insert(0, str(daily))
+        import types
+
+        user_config_stub = types.ModuleType("user_config")
+        user_config_stub.daily_papers_config = lambda: {
+            "keywords": [],
+            "negative_keywords": [],
+            "rejected_journals": [],
+            "domain_boost_keywords": [],
+            "keyword_variants": {},
+            "min_score": 1,
+            "top_n": 30,
+            "search_retmax": 0,
+            "search_retmax_total_cap": 0,
+            "min_quartile": 4,
+            "biorxiv_enabled": False,
+            "pubmed_enabled": False,
+            "biorxiv_retmax": 0,
+            "biorxiv_retmax_total_cap": 0,
+            "biorxiv_timeout": 30,
+            "biorxiv_categories": [],
+            "efetch_workers": 1,
+        }
+        user_config_stub.daily_papers_dir = lambda: ROOT
+        user_config_stub.ncbi_api_key = lambda: ""
+        user_config_stub.temp_file_path = lambda name: ROOT / name
+        sys.modules["user_config"] = user_config_stub
+
+        cas_stub = types.ModuleType("cas_quartiles")
+        cas_stub.lookup_journal = lambda journal: {}
+        sys.modules["cas_quartiles"] = cas_stub
+
+        profile_stub = types.ModuleType("library_profile")
+        profile_stub.load_or_build_library_profile = lambda config, refresh=False: {}
+        sys.modules["library_profile"] = profile_stub
+
+        import fetch_and_score as fs
+
+        paper = {"date": "2025-08-07", "date_candidates": ["2025-08-07", "2025-08-26"]}
+        self.assertTrue(fs.apply_pubmed_date_window(paper, date(2025, 8, 26), date(2025, 8, 29)))
+        self.assertEqual(paper["date"], "2025-08-26")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,6 +60,7 @@ profile_stub.load_or_build_library_profile = lambda config, refresh=False: {
     "preferred_journals": [],
 }
 sys.modules["library_profile"] = profile_stub
+sys.modules.pop("fetch_and_score", None)
 
 import fetch_and_score as fs
 
