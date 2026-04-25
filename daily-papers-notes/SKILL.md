@@ -37,7 +37,7 @@ description: |
 python ..\paper-reader\run_reader.py "{PUBMED_URL_OR_DOI}" --mode standard --prefer-visible-browser
 ```
 
-> `--prefer-visible-browser` 优先通过 patchright / 浏览器路径尝试获取出版社全文与 PDF，并尽量沿用真实 Chrome profile 中的机构 cookies。只有在无浏览器、CI 或明确只想跑 PMC/API 摘要模式时，才临时加 `--no-playwright`。
+> `--prefer-visible-browser` 优先通过 patchright / 浏览器路径尝试获取出版社全文与 PDF。要稳定继承正在使用中的机构 cookies，先用 remote-debugging 启动 Chrome 并设置 `PAPER_READER_CDP_URL`；如果默认 Chrome profile 正在运行且没有 CDP，脚本会退到无 cookies 的临时 profile，并在笔记 Metadata 的 `Cookie source` 中标出。只有在无浏览器、CI 或明确只想跑 PMC/API 摘要模式时，才临时加 `--no-playwright`。
 
 3. 如果已有旧笔记但内容明显不完整，不要直接删除；先重命名为 `*.bak-YYYYMMDD-HHMMSS.md`，再重生成。
 4. 运行回填：

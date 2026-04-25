@@ -2,7 +2,8 @@
 :: sync_to_codex.bat — 把 Project 目录的 skill 同步到 codex 运行目录
 :: 用法: 在 dailypaper-skills\ 下双击运行，或在修改后调用
 
-set SRC=E:\Claude\Project\dailypaper-skills
+set SRC=%~dp0
+if "%SRC:~-1%"=="\" set SRC=%SRC:~0,-1%
 set DST=C:\Users\10312\.codex\skills
 
 echo [sync] %SRC% → %DST%
@@ -17,7 +18,9 @@ xcopy /Y /E /Q "%SRC%\paper-reader\references\"  "%DST%\paper-reader\references\
 
 :: _shared
 xcopy /Y /Q "%SRC%\_shared\user-config.json"         "%DST%\_shared\"
+xcopy /Y /Q "%SRC%\_shared\user-config.local.json.example" "%DST%\_shared\"
 xcopy /Y /Q "%SRC%\_shared\user_config.py"            "%DST%\_shared\"
+xcopy /Y /Q "%SRC%\_shared\date_window.py"            "%DST%\_shared\"
 xcopy /Y /Q "%SRC%\_shared\cas_quartiles.py"          "%DST%\_shared\"
 xcopy /Y /Q "%SRC%\_shared\moc_builder.py"            "%DST%\_shared\"
 xcopy /Y /Q "%SRC%\_shared\generate_concept_mocs.py"  "%DST%\_shared\"

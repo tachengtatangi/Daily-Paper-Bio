@@ -1019,6 +1019,8 @@ def fetch_paper_pdf(
         result["paywall_reason"] = patchright_result["paywall_reason"]
     elif patchright_result.get("paywall_reason"):
         result["paywall_reason"] = patchright_result["paywall_reason"]
+    if patchright_result.get("cookie_source"):
+        result["cookie_source"] = patchright_result["cookie_source"]
 
     # Use patchright full_text only if we don't already have better (Elsevier API) text
     if not result["full_text"] and patchright_result.get("full_text"):
@@ -1029,5 +1031,7 @@ def fetch_paper_pdf(
         # Elsevier API text + PDF obtained → upgrade description
         result["summary_mode"]     = "基于 Elsevier API 全文/XML + PDF（patchright）"
         result["acquisition_path"] = "Elsevier API(view=FULL) via curl + patchright PDF"
+    if result["acquisition_path"] and result["cookie_source"] == "temp_profile_no_cookies":
+        result["acquisition_path"] += "（no user cookies）"
 
     return result

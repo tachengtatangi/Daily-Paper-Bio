@@ -86,6 +86,7 @@ python ..\daily-papers\enrich_papers.py
 - `keywords` 用于本地准入和打分；临时 `--keywords` 会覆盖这组词。
 - `negative_keywords` 是硬过滤，命中即拒绝
 - `domain_boost_keywords` 只负责加分；默认不是主列表准入条件，除非显式设置 `domain_boost_can_admit=true`
+- `keyword_variants` 为 `keywords` / `domain_boost_keywords` / `negative_keywords` 提供配置化别名；代码仍会自动处理大小写、常见单复数、连字符/空格差异
 
 ## 输出
 

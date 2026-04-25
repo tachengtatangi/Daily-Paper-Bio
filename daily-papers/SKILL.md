@@ -50,7 +50,7 @@ description: |
 
 `今日论文推荐，关键词 convergent evolution taste receptor`
 
-则把这组词作为本次 `--keywords` 临时覆盖传给 fetch 步骤。原版风格下只有一套主题词语义：同一组词同时决定远程抓取和本地打分。
+则把这组词作为本次 `--keywords` 临时覆盖传给 fetch 步骤。当前抓取语义是：PubMed 先按日期抓宽候选池，再本地按关键词筛选和打分；当宽候选池触发 retmax 截断时，会用这组关键词追加补充检索。bioRxiv 先按日期和配置中的 `biorxiv_categories` 取候选，再本地筛选和打分。
 
 ## 约束
 

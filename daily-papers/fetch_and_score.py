@@ -199,10 +199,9 @@ BIORXIV_FETCH_STATS = {
 FORMULA_RESIDUE_RE = re.compile(r"\[\s*formula:\s*see\s*text\s*\]|\bformula:\s*see\s*text\b", re.IGNORECASE)
 CTRL_RESIDUE_RE = re.compile(r"[\uFFFD\u200B-\u200D\u2060]+")
 
-# Keyword variant aliases: empty by default.
-# normalize_token already handles plurals, suffixes, and hyphen variants automatically.
-# "de novo genes" → ["de","novo","gene"] == ["de","novo","gene"] (after fix: "es" rule
-# skipped for 5-char words, falls through to "s" → "gene"). No manual variants needed.
+# Keyword variant aliases are config-driven. normalize_token covers common
+# plural and hyphen/space variants; keyword_variants covers semantic aliases
+# such as transcriptome/transcriptomics or convergent/convergence phrasing.
 CANONICAL_VARIANTS: dict[str, list[str]] = {}
 
 
@@ -234,6 +233,34 @@ def clean_display_text(text: str) -> str:
 def reset_filter_audit() -> None:
     for key in FILTER_AUDIT:
         FILTER_AUDIT[key] = []
+
+
+def normalize_keyword_variant_map(configured: object, known_terms: list[str]) -> dict[str, list[str]]:
+    """Build a lookup keyed by every configured keyword/boost/negative term."""
+    raw = configured if isinstance(configured, dict) else {}
+    lookup: dict[str, list[str]] = {}
+    known_by_norm = {
+        str(term).strip().lower(): str(term).strip()
+        for term in known_terms
+        if str(term).strip()
+    }
+    for canonical_raw, aliases_raw in raw.items():
+        canonical = re.sub(r"\s+", " ", str(canonical_raw or "")).strip()
+        if not canonical:
+            continue
+        aliases = aliases_raw if isinstance(aliases_raw, list) else [aliases_raw]
+        variants = unique_keep_case([canonical] + [str(item or "") for item in aliases])
+        if not variants:
+            continue
+        keys = {canonical, known_by_norm.get(canonical.lower(), canonical)}
+        for alias in variants:
+            keys.add(alias)
+            if alias.lower() in known_by_norm:
+                keys.add(known_by_norm[alias.lower()])
+        for key in keys:
+            if key:
+                lookup[key] = variants
+    return lookup
 
 
 # Lock protecting all writes to FILTER_AUDIT (parse_pubmed_xml runs in parallel).
@@ -279,7 +306,7 @@ def apply_library_profile(refresh: bool = False) -> dict:
         PROFILE_BOOST_KEYWORDS       ← auto-extracted from PDF library
     """
     global KEYWORDS, NEGATIVE_KEYWORDS, REJECTED_JOURNALS, DOMAIN_BOOST_KEYWORDS
-    global PROFILE_BOOST_KEYWORDS, PROFILE_PREFERRED_JOURNALS
+    global PROFILE_BOOST_KEYWORDS, PROFILE_PREFERRED_JOURNALS, CANONICAL_VARIANTS
     profile = load_or_build_library_profile(_CONFIG, refresh=refresh)
     PROFILE_BOOST_KEYWORDS = unique_keep_case(profile.get("domain_boost_keywords", []))
     PROFILE_PREFERRED_JOURNALS = unique_keep_case(profile.get("preferred_journals", []))
@@ -287,6 +314,10 @@ def apply_library_profile(refresh: bool = False) -> dict:
     NEGATIVE_KEYWORDS = list(BASE_NEGATIVE_KEYWORDS)
     REJECTED_JOURNALS = list(BASE_REJECTED_JOURNALS)
     DOMAIN_BOOST_KEYWORDS = unique_keep_case(BASE_DOMAIN_BOOST_KEYWORDS + PROFILE_BOOST_KEYWORDS)
+    CANONICAL_VARIANTS = normalize_keyword_variant_map(
+        _CONFIG.get("keyword_variants", {}),
+        KEYWORDS + DOMAIN_BOOST_KEYWORDS + NEGATIVE_KEYWORDS,
+    )
     return profile
 
 
@@ -588,15 +619,20 @@ def pubmed_keyword_variants(keyword: str) -> list[str]:
     clean = re.sub(r"\s+", " ", str(keyword or "")).strip()
     if not clean:
         return []
-    variants = [clean]
-    parts = clean.split(" ")
-    if parts:
-        last = parts[-1]
-        lower = last.lower()
-        if len(last) >= 4 and lower.endswith("s") and not lower.endswith(("ss", "us", "is")):
-            variants.append(" ".join(parts[:-1] + [last[:-1]]))
-        elif len(last) >= 3 and not lower.endswith(("ss", "us", "is")):
-            variants.append(" ".join(parts[:-1] + [last + "s"]))
+    variants: list[str] = []
+    for base in CANONICAL_VARIANTS.get(clean, [clean]):
+        base = re.sub(r"\s+", " ", str(base or "").strip())
+        if not base:
+            continue
+        variants.append(base)
+        parts = base.split(" ")
+        if parts:
+            last = parts[-1]
+            lower = last.lower()
+            if len(last) >= 4 and lower.endswith("s") and not lower.endswith(("ss", "us", "is")):
+                variants.append(" ".join(parts[:-1] + [last[:-1]]))
+            elif len(last) >= 3 and not lower.endswith(("ss", "us", "is")):
+                variants.append(" ".join(parts[:-1] + [last + "s"]))
     return unique_keep_case(variants)
 
 

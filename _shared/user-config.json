@@ -65,10 +65,102 @@
       "bat immunity",
       "speciation genomics",
       "genomic divergence",
+      "genomic convergence",
+      "host genomic convergence",
+      "sensory evolution",
+      "olfactory evolution",
+      "visual evolution",
+      "phenotypic evolution",
       "cis-regulatory evolution",
       "cis-regulatory sequence evolution",
-      "convergent trait"
+      "convergent trait",
+      "convergent acquisition"
     ],
+    "keyword_variants": {
+      "convergent evolution": [
+        "convergent evolutionary",
+        "evolutionary convergence",
+        "convergent adaptation",
+        "convergent adaptations"
+      ],
+      "convergent acquisition": [
+        "convergent acquisitions",
+        "convergently acquired",
+        "convergent gain",
+        "convergent gains"
+      ],
+      "genomic convergence": [
+        "genome convergence",
+        "genomic convergences",
+        "convergent genomic",
+        "host genomic convergence"
+      ],
+      "molecular convergence": [
+        "molecular convergences",
+        "convergent molecular evolution",
+        "convergent molecular adaptation"
+      ],
+      "de novo gene": [
+        "de novo genes",
+        "de-novo gene",
+        "de-novo genes",
+        "newly evolved gene",
+        "newly evolved genes"
+      ],
+      "gene family evolution": [
+        "gene family expansion",
+        "gene family contraction",
+        "gene family diversification",
+        "gene family turnover"
+      ],
+      "sensory receptor": [
+        "sensory receptors",
+        "chemosensory receptor",
+        "chemosensory receptors"
+      ],
+      "olfactory receptor": [
+        "olfactory receptors",
+        "olfactory repertoire",
+        "olfactory repertoires",
+        "olfactory receptor repertoire",
+        "olfactory receptor repertoires"
+      ],
+      "taste receptor": [
+        "taste receptors",
+        "gustatory receptor",
+        "gustatory receptors",
+        "taste receptor repertoire",
+        "taste receptor repertoires"
+      ],
+      "bitter taste receptor": [
+        "bitter taste receptors",
+        "bitter receptor",
+        "bitter receptors",
+        "tas2r",
+        "tas2rs"
+      ],
+      "regulatory evolution": [
+        "cis-regulatory evolution",
+        "regulatory sequence evolution",
+        "regulatory divergence"
+      ],
+      "enhancer evolution": [
+        "enhancer divergence",
+        "enhancer turnover",
+        "enhancer gain",
+        "enhancer loss"
+      ],
+      "comparative transcriptomics": [
+        "comparative transcriptomic",
+        "comparative transcriptome",
+        "comparative transcriptomes"
+      ],
+      "immune tolerance": [
+        "immunological tolerance",
+        "viral tolerance",
+        "virus tolerance"
+      ]
+    },
     "domain_boost_keywords": [
       "bats",
       "receptor repertoire",

@@ -39,7 +39,9 @@ def parse_date(value: str | date | None, *, default: date | None = None) -> date
 
 def parse_window(end: str | date | None = None, days: int = 1) -> DateWindow:
     end_date = parse_date(end, default=date.today())
-    safe_days = max(1, int(days or 1))
+    safe_days = int(days)
+    if safe_days < 1:
+        raise ValueError(f"days must be >= 1, got {days!r}")
     start_date = end_date - timedelta(days=safe_days - 1)
     return DateWindow(start=start_date, end=end_date, days=safe_days)
 

@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
         "negative_keywords": [],
         "rejected_journals": [],
         "domain_boost_keywords": [],
+        "keyword_variants": {},
         "search_retmax": 5000,
         "search_retmax_total_cap": 15000,
         "efetch_workers": 5,
