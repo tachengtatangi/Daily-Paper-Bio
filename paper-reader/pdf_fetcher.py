@@ -94,6 +94,28 @@ def _find_free_port(start: int = 9240) -> int:
     raise RuntimeError("No free CDP port found")
 
 
+def _existing_cdp_url() -> str:
+    configured = (
+        os.environ.get("PAPER_READER_CDP_URL")
+        or os.environ.get("CHROME_CDP_URL")
+        or os.environ.get("CDP_URL")
+        or ""
+    ).strip().rstrip("/")
+    candidates = [configured] if configured else []
+    candidates.extend(f"http://127.0.0.1:{port}" for port in (9222, 9223, 9240))
+    import urllib.request
+    for base in candidates:
+        if not base:
+            continue
+        try:
+            with urllib.request.urlopen(f"{base}/json/version", timeout=1) as resp:
+                if resp.status == 200:
+                    return base
+        except Exception:
+            continue
+    return ""
+
+
 async def _wait_for_cdp(port: int, max_wait: int = 25) -> bool:
     import urllib.request
     for _ in range(max_wait):
@@ -670,56 +692,87 @@ async def _run_patchright_pipeline(
         "acquisition_path": "",
         "paywall": False,
         "paywall_reason": "",
+        "cookie_source": "none",
     }
 
-    chrome_exe = _find_chrome()
-    if not chrome_exe:
-        result["paywall_reason"] = "Chrome not found"
-        return result
-
     known_domains = _auto_known_domains(article_url)
-    port   = _find_free_port(9240)
+    existing_cdp = _existing_cdp_url()
+    proc = None
+    port = 0
 
     # ── Prefer user's real Chrome profile so institutional cookies are available ──
     # Priority:
-    #   1. User's default Chrome User Data directory, if Chrome is NOT currently
+    #   1. Existing CDP Chrome (PAPER_READER_CDP_URL / CHROME_CDP_URL, or common
+    #      localhost ports). This is the only reliable way to reuse cookies while
+    #      the user's everyday Chrome profile is already open.
+    #   2. User's default Chrome User Data directory, if Chrome is NOT currently
     #      running (no SingletonLock).  Carries cookies / institutional login.
-    #   2. Temp directory fallback — always safe; no cookies.
+    #   3. Temp directory fallback — always safe; no cookies.
     # Rationale for SingletonLock check: if Chrome is already running with that
     # profile, launching a second instance with --remote-debugging-port will
     # silently delegate the URL to the existing Chrome and then exit, leaving
     # our CDP port unbound.  _wait_for_cdp would timeout.  Falling back to a
     # temp profile avoids the conflict (at the cost of no institutional cookies
     # for that one call).
-    _local_app_data = os.environ.get("LOCALAPPDATA", "")
-    _real_profile = os.path.join(_local_app_data, "Google", "Chrome", "User Data") if _local_app_data else ""
-    _profile_in_use = os.path.exists(os.path.join(_real_profile, "SingletonLock")) if _real_profile else False
-    if _real_profile and os.path.isdir(_real_profile) and not _profile_in_use:
-        user_data_dir = _real_profile
+    if existing_cdp:
+        result["cookie_source"] = "existing_cdp_browser"
+        cdp_url = existing_cdp
     else:
-        tmp = os.path.join(tempfile.gettempdir(), f"pdf_fetcher_cdp_{port}")
-        os.makedirs(tmp, exist_ok=True)
-        user_data_dir = tmp
+        chrome_exe = _find_chrome()
+        if not chrome_exe:
+            result["paywall_reason"] = "Chrome not found"
+            return result
+        port = _find_free_port(9240)
+        cdp_url = f"http://localhost:{port}"
+        _local_app_data = os.environ.get("LOCALAPPDATA", "")
+        _real_profile = os.environ.get("PAPER_READER_CHROME_USER_DATA_DIR", "").strip()
+        if not _real_profile and _local_app_data:
+            _real_profile = os.path.join(_local_app_data, "Google", "Chrome", "User Data")
+        _profile_in_use = os.path.exists(os.path.join(_real_profile, "SingletonLock")) if _real_profile else False
+        if _real_profile and os.path.isdir(_real_profile) and not _profile_in_use:
+            user_data_dir = _real_profile
+            result["cookie_source"] = "real_chrome_profile"
+        else:
+            # Use a fresh profile every time. Reusing a temp profile can leave a
+            # stale SingletonLock/session behind; Chrome then exits or delegates
+            # to another process and the requested CDP port never opens.
+            tmp = tempfile.mkdtemp(prefix=f"pdf_fetcher_cdp_{port}_")
+            user_data_dir = tmp
+            result["cookie_source"] = "temp_profile_no_cookies"
+            if _profile_in_use:
+                result["paywall_reason"] = "Default Chrome profile is in use; falling back to temp profile without cookies"
 
-    proc = subprocess.Popen(
-        [chrome_exe,
-         f"--remote-debugging-port={port}",
-         f"--user-data-dir={user_data_dir}",
-         "--no-first-run", "--no-default-browser-check",
-         article_url],
-        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-    )
+        launch_args = [
+            chrome_exe,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={user_data_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
+        profile_dir = os.environ.get("PAPER_READER_CHROME_PROFILE_DIRECTORY", "").strip()
+        if profile_dir:
+            launch_args.append(f"--profile-directory={profile_dir}")
+        launch_args.append(article_url)
+        proc = subprocess.Popen(
+            launch_args,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
 
     pdf_bytes   = b""
     real_url    = ""
 
+    async def _close_browser(browser) -> None:
+        if existing_cdp:
+            return
+        await browser.close()
+
     try:
         async with async_playwright() as pw:
-            if not await _wait_for_cdp(port):
+            if not existing_cdp and not await _wait_for_cdp(port):
                 result["paywall_reason"] = "CDP timeout"
                 return result
 
-            browser = await pw.chromium.connect_over_cdp(f"http://localhost:{port}")
+            browser = await pw.chromium.connect_over_cdp(cdp_url)
             context = browser.contexts[0]
             page    = context.pages[0] if context.pages else await context.new_page()
 
@@ -748,7 +801,7 @@ async def _run_patchright_pipeline(
 
             if not real_url:
                 result["paywall_reason"] = "Article page load timeout"
-                await browser.close()
+                await _close_browser(browser)
                 return result
 
             await asyncio.sleep(2)
@@ -761,7 +814,7 @@ async def _run_patchright_pipeline(
 
             if not pdf_url and not viewer_url:
                 result["paywall_reason"] = "No PDF link found on page"
-                await browser.close()
+                await _close_browser(browser)
                 return result
             if not pdf_url:
                 pdf_url = viewer_url
@@ -793,19 +846,20 @@ async def _run_patchright_pipeline(
                     if pw_reason:
                         result["paywall"]        = True
                         result["paywall_reason"] = pw_reason
-                        await browser.close()
+                        await _close_browser(browser)
                         return result
                 result["paywall_reason"] = "PDF download failed (all steps)"
-                await browser.close()
+                await _close_browser(browser)
                 return result
 
-            await browser.close()
+            await _close_browser(browser)
 
     finally:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
         result["paywall_reason"] = "Response is not a valid PDF"

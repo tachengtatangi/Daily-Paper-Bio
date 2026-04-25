@@ -23,6 +23,7 @@ if str(SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_DIR))
 
 from user_config import daily_papers_config, paper_notes_dir, temp_file_path
+from date_window import parse_date
 
 LABEL_MUST = "必读"
 LABEL_WORTH = "值得看"
@@ -186,38 +187,17 @@ def _build_split_table(sections: dict[str, list[dict]], note_cache: dict[int, st
 
 
 def _default_reason(paper: dict) -> str:
-    bits: list[str] = []
-    kws = display_keywords(paper)
-    if kws:
-        bits.append(f"命中主题词 {SEP.join(kws[:3])}")
-    if paper.get("score", 0):
-        bits.append(f"当前筛选得分 {paper.get('score', 0)}")
-    journal = normalize_text(paper.get("journal", ""))
-    if journal:
-        bits.append(f"来源于 {journal}")
-    if paper.get("has_real_world"):
-        bits.append("含真实样本或实验信号")
-    if not bits:
-        return "与当前主题存在一定相关性，建议人工复核全文与方法细节。"
-    return "；".join(bits) + "。"
+    return (
+        "TODO_AGENT_REWRITE_REASON: 基于标题、摘要、来源、关键词和分级，"
+        "改写为正式推荐理由；不要保留自动打分解释。"
+    )
 
 
 def _default_abstract_comment(paper: dict) -> str:
-    title = clean_title(paper.get("title", ""))
-    kws = display_keywords(paper)
-    journal = normalize_text(paper.get("journal", ""))
-    source = normalize_text(paper.get("source", "unknown"))
-    parts: list[str] = []
-    if title:
-        parts.append(f"这篇工作围绕“{title}”展开。")
-    if kws:
-        parts.append(f"从自动匹配结果看，它主要落在 {SEP.join(kws[:3])} 这条主题线上。")
-    if journal:
-        parts.append(f"当前来源为 {journal}。")
-    else:
-        parts.append(f"当前来源为 {source}。")
-    parts.append("这部分仍是结构化草稿，需在阅读摘要后补成正式中文短评。")
-    return "".join(parts)
+    return (
+        "TODO_AGENT_REWRITE_ABSTRACT: 阅读摘要与富化信息后，改写为正式中文摘要短评；"
+        "必须交代对象、问题、数据/方法、核心结果和证据边界。"
+    )
 
 
 def _header_summary(primary: list[dict], low_signal: list[dict]) -> str:
@@ -228,16 +208,15 @@ def _header_summary(primary: list[dict], low_signal: list[dict]) -> str:
         for kw in display_keywords(paper):
             kw_freq[kw] = kw_freq.get(kw, 0) + 1
     top_kws = sorted(kw_freq, key=lambda item: (-kw_freq[item], item))[:4]
-    parts = [f"本轮主列表共 {len(primary)} 篇。"]
+    parts = ["TODO_AGENT_REWRITE_REVIEW: 根据当天入选论文改写顶部推荐锐评。"]
     if top_kws:
-        parts.append(f"高频主题集中在 {SEP.join(top_kws)}。")
+        parts.append(f"候选高频主题提示：{SEP.join(top_kws)}。")
     must_count = len(classify_sections(primary)[LABEL_MUST])
-    parts.append(f"当前自动分桶得到 {must_count} 篇必读。")
+    parts.append(f"自动分桶提示：必读 {must_count} 篇。")
     if len(primary) < 3:
-        parts.append("今天主题信号偏弱，建议扩大时间窗口后再看。")
+        parts.append("候选数量偏少，需要判断是否扩大时间窗口。")
     if low_signal:
-        parts.append(f"另有 {len(low_signal)} 篇低信号候选被降到附录或隐藏。")
-    parts.append("以下内容仍是结构化草稿，需在阅读题目、摘要和上下文后补写最终锐评。")
+        parts.append(f"低信号候选提示：{len(low_signal)} 篇。")
     return "".join(parts)
 
 
@@ -332,9 +311,10 @@ def main() -> int:
 
     input_path = Path(args.input_json)
     papers = json.loads(input_path.read_text(encoding="utf-8-sig"))
-    output_path = Path(args.output) if args.output else temp_file_path(f"{args.date}-{DRAFT_SUFFIX}")
+    report_date = parse_date(args.date).isoformat()
+    output_path = Path(args.output) if args.output else temp_file_path(f"{report_date}-{DRAFT_SUFFIX}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(build_markdown(papers, args.date), encoding="utf-8-sig")
+    output_path.write_text(build_markdown(papers, report_date), encoding="utf-8-sig")
     print(json.dumps({"draft_path": str(output_path), "paper_count": len(papers)}, ensure_ascii=False))
     return 0
 

@@ -82,10 +82,10 @@ python ..\daily-papers\enrich_papers.py
 
 ## 当前抓取语义
 
-- 只有一套 `keywords`
-- 这组词同时用于 PubMed 远程检索和本地打分
+- PubMed 默认先按日期抓取宽候选池；如果日期窗口总量超过抓取上限，会用 `keywords` 追加一次主题补充检索，避免重要主题论文被 `retmax` 截断漏掉。
+- `keywords` 用于本地准入和打分；临时 `--keywords` 会覆盖这组词。
 - `negative_keywords` 是硬过滤，命中即拒绝
-- `domain_boost_keywords` 只负责加分，不是主列表准入条件
+- `domain_boost_keywords` 只负责加分；默认不是主列表准入条件，除非显式设置 `domain_boost_can_admit=true`
 
 ## 输出
 

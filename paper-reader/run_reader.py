@@ -466,7 +466,7 @@ def figure_takeaways_from_record(record: dict) -> str:
         if not caption or caption in seen:
             continue
         seen.add(caption)
-        takeaways.append(caption)
+        takeaways.append(f"图注线索：{caption[:320]}")
         if len(takeaways) >= 3:
             break
 
@@ -657,6 +657,8 @@ def sanitize_figure_summary_text(text: str, record: dict) -> str:
 
 def render_note_section_text(section_key: str, text: str) -> str:
     cleaned = clean_structured_text(text)
+    if section_key == "related_concepts":
+        return _normalize_related_concepts(cleaned)
     if section_key == "main_findings":
         return render_main_findings_text(cleaned)
     if section_key == "figure_takeaways":
@@ -729,6 +731,7 @@ def merge_fulltext_record(base: dict, extra: dict) -> dict:
         "image_url",
         "web_url",
         "doi_url",
+        "cookie_source",
     ]:
         value = extra.get(key)
         if value:
@@ -761,12 +764,35 @@ def source_links(record: dict, source: str) -> dict:
         or record.get("local_pdf", "")
         or record.get("local_path", "")
     )
+    pubmed_url = normalize_article_url(record.get("pubmed_url", ""))
+    doi_url = normalize_article_url(record.get("doi_url", ""))
+    web_url = normalize_article_url(record.get("web_url", "") or (source if detect_source_kind(source)[0] == "web_url" else ""))
     return {
-        "pubmed_url": record.get("pubmed_url", ""),
-        "doi_url": record.get("doi_url", ""),
-        "web_url": record.get("web_url", "") or (source if detect_source_kind(source)[0] == "web_url" else ""),
+        "pubmed_url": pubmed_url,
+        "doi_url": doi_url,
+        "web_url": web_url,
         "pdf_path": pdf_path,
     }
+
+
+def normalize_article_url(url: str) -> str:
+    raw = normalize_whitespace(str(url or ""))
+    if not raw:
+        return ""
+    raw = html.unescape(raw)
+    nested = re.match(r"^https?://[^/]+/(https?://.+)$", raw, re.IGNORECASE)
+    if nested:
+        return normalize_article_url(nested.group(1))
+    bad_pubmed_relative = re.match(
+        r"^https?://pubmed\.ncbi\.nlm\.nih\.gov/(www\..+|[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.+)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if bad_pubmed_relative:
+        return normalize_external_href("", bad_pubmed_relative.group(1))
+    if re.match(r"^https?://", raw, re.IGNORECASE):
+        return raw
+    return normalize_external_href("", raw)
 
 
 def format_markdown_link(label: str, target: str) -> str:
@@ -922,7 +948,11 @@ def _fetch_pmc_id_via_elink(pmid: str) -> str:
         data = json.loads(raw)
         for ls in data.get("linksets", []):
             for lsdb in ls.get("linksetdbs", []):
-                if lsdb.get("dbto") == "pmc":
+                linkname = normalize_whitespace(lsdb.get("linkname", "")).lower()
+                # pubmed_pmc is the article's own PMC full text. pubmed_pmc_refs
+                # is the set of PMC articles that cite/reference this paper; using
+                # it as full text silently cross-contaminates notes.
+                if lsdb.get("dbto") == "pmc" and linkname == "pubmed_pmc":
                     ids = lsdb.get("links", [])
                     if ids:
                         return str(ids[0])
@@ -1660,6 +1690,18 @@ def pdf_text_quality(text: str) -> int:
     return len(clean) + 4000 * count_article_section_hits(clean)
 
 
+def normalize_external_href(base_url: str, href: str) -> str:
+    """Normalize publisher links that PubMed sometimes exposes without scheme."""
+    href = normalize_whitespace(html.unescape(str(href or "")))
+    if not href:
+        return ""
+    if href.startswith("//"):
+        return "https:" + href
+    if re.match(r"^(?:www\.|[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?:/|$)", href):
+        return "https://" + href.lstrip("/")
+    return urljoin(base_url or "", href)
+
+
 def extract_pubmed_full_text_links(html_text: str) -> list[str]:
     links = []
     for match in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*linksrc=fulltextorjournal_fulltext[^>]*>', html_text, re.IGNORECASE):
@@ -1670,7 +1712,7 @@ def extract_pubmed_full_text_links(html_text: str) -> list[str]:
         links.append(href)
     deduped = []
     for href in links:
-        absolute = urljoin("https://pubmed.ncbi.nlm.nih.gov/", href)
+        absolute = normalize_external_href("https://pubmed.ncbi.nlm.nih.gov/", href)
         if absolute not in deduped:
             deduped.append(absolute)
     return deduped
@@ -1701,7 +1743,7 @@ def normalized_pdf_candidates(candidates: list[str], current_url: str = "") -> l
         url = normalize_whitespace(candidate)
         if not url:
             continue
-        url = urljoin(current_url, url)
+        url = normalize_external_href(current_url, url)
         variants = [url]
         if "/doi/epdf/" in url:
             variants.insert(0, url.replace("/doi/epdf/", "/doi/pdfdirect/") + ("&download=true" if "?" in url else "?download=true"))
@@ -2901,6 +2943,7 @@ def collect_python_playwright_pdf_candidates(page, current_url: str) -> list[str
 
 
 def fetch_web_with_python_playwright(url: str, headed: bool = False) -> dict:
+    url = normalize_article_url(url)
     if sync_playwright is None:
         return {}
     chrome_path = find_chrome_executable()
@@ -2959,6 +3002,15 @@ def fetch_web_with_python_playwright(url: str, headed: bool = False) -> dict:
             page.wait_for_timeout(1200)
 
             current_url = normalize_whitespace(page.url) or url
+            fixed_current_url = normalize_article_url(current_url)
+            if fixed_current_url and fixed_current_url != current_url:
+                try:
+                    page.goto(fixed_current_url, wait_until="domcontentloaded", timeout=120000)
+                    page.wait_for_timeout(10000 if headed else 6500)
+                    try_solve_human_check(page)
+                    current_url = normalize_whitespace(page.url) or fixed_current_url
+                except Exception:
+                    current_url = fixed_current_url
             title = clean_record_title(page.title())
             body = ""
             html_fragment = ""
@@ -3050,6 +3102,7 @@ def fetch_web_with_python_playwright(url: str, headed: bool = False) -> dict:
 
 
 def fetch_web_with_playwright(url: str, headed: bool = False) -> dict:
+    url = normalize_article_url(url)
     if SKIP_PLAYWRIGHT:
         return {}
     python_record = fetch_web_with_python_playwright(url, headed=headed)
@@ -3327,6 +3380,7 @@ def fetch_web_with_playwright(url: str, headed: bool = False) -> dict:
 
 
 def try_fetch_full_text_link(url: str) -> dict:
+    url = normalize_article_url(url)
     if not url:
         return {}
     try:
@@ -3627,7 +3681,8 @@ def resolve_source(source: str) -> dict:
         pmc_id = _fetch_pmc_id_via_elink(pmid)
         if pmc_id:
             pmc_record = _fetch_pmc_record(pmc_id)
-            if pmc_record.get("full_text"):
+            pmc_pmid = normalize_whitespace(str(pmc_record.get("pmid", "") or ""))
+            if pmc_record.get("full_text") and (not pmc_pmid or pmc_pmid == pmid):
                 # Enrich PMC full text with PubMed-side metadata
                 pubmed_record = fetch_pubmed_by_pmid(pmid)
                 record = merge_fulltext_record(pubmed_record, pmc_record)
@@ -4297,9 +4352,6 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
     abstract = record.get("abstract", "")
     full_text = record.get("full_text", "")
     title = record.get("title", "")
-    # Prefer full_text (local PDF / PMC) over abstract (PubMed metadata).
-    # abstract or full_text would silently drop PDF content whenever PubMed
-    # abstract is present — exactly the wrong priority for local-PDF inputs.
     rich_text = full_text if normalize_whitespace(full_text) else abstract
     summary_text = rich_text or title
     title_hint = title or "该论文"
@@ -4311,20 +4363,102 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
     abstract_available = bool(normalize_whitespace(abstract))
     full_text_available = bool(normalize_whitespace(full_text)) and not access_issue
 
-    if access_issue and not abstract_available:
-        findings = "当前抓取到的主要是安全验证页或 cookie wall，不是论文正文，因此还不能可靠提炼主要结论。"
-    else:
-        findings = f"围绕\"{title_hint}\"的主要结果已经能看出一个大致轮廓，但还需要结合正文和图表逐条核对。"
+    def _sentences(text: str, limit: int = 80) -> list[str]:
+        cleaned = []
+        for sentence in sentence_chunks(text, limit=limit):
+            sentence = normalize_whitespace(sentence)
+            if len(sentence) < 35:
+                continue
+            low = sentence.lower()
+            if low in {"abstract.", "introduction.", "methods.", "results.", "discussion."}:
+                continue
+            if any(
+                marker in low
+                for marker in [
+                    "the https:// ensures",
+                    "official website and that any information",
+                    "encrypted and transmitted securely",
+                    "enable javascript",
+                    "cookies are enabled",
+                ]
+            ):
+                continue
+            if looks_like_internal_dump_line(sentence):
+                continue
+            cleaned.append(sentence[:360])
+        return unique_keep_order(cleaned)
+
+    def _pick(text: str, tokens: list[str], limit: int = 3) -> list[str]:
+        hits = []
+        for sentence in _sentences(text):
+            low = sentence.lower()
+            if any(token in low for token in tokens):
+                hits.append(sentence)
+            if len(hits) >= limit:
+                break
+        return hits
+
+    def _zh_evidence(items: list[str], prefix: str, fallback: str, limit: int = 3) -> str:
+        if not items:
+            return markdown_bullets([fallback])
+        return markdown_bullets([f"{prefix}：{item}" for item in items[:limit]])
 
     methods_candidates = [
-        s for s in sentence_chunks(rich_text, limit=8)
-        if any(token in s.lower() for token in ["method", "using", "performed", "review", "simulation", "assay", "analysis", "model"])
+        s for s in _pick(
+            rich_text,
+            [
+                " using ",
+                "we used",
+                "we performed",
+                "performed",
+                "analysis",
+                "assay",
+                "sequencing",
+                "rna-seq",
+                "chip-seq",
+                "cryo-em",
+                "structure",
+                "model",
+                "dataset",
+                "sample",
+                "specimen",
+            ],
+            limit=4,
+        )
     ]
-    methods_candidate = " ".join(methods_candidates[:2]) if methods_candidates else ""
-    methods = (
-        methods_candidate
-        if methods_candidate and count_cjk_chars(methods_candidate) >= 12
-        else f"当前材料显示作者围绕\"{title_hint}\"展开了分析，但更细的方法步骤还需要回到正文确认。"
+    finding_candidates = _pick(
+        rich_text,
+        [
+            "we show",
+            "we found",
+            "we identify",
+            "we identified",
+            "we reveal",
+            "reveals",
+            "demonstrate",
+            "suggest",
+            "provide",
+            "indicate",
+            "showed",
+            "found that",
+        ],
+        limit=5,
+    )
+    if not finding_candidates:
+        finding_candidates = _sentences(abstract or rich_text, limit=5)[:4]
+    background_candidates = _sentences(abstract or rich_text, limit=5)[:2]
+
+    methods = _zh_evidence(
+        methods_candidates,
+        "方法线索",
+        "可用材料没有稳定抽取到方法句；需要回到全文确认样本、实验设计和统计流程。",
+        limit=3,
+    )
+    findings = _zh_evidence(
+        finding_candidates,
+        "结果线索",
+        "可用材料没有稳定抽取到结果句；目前不应仅凭题目推断主要发现。",
+        limit=5,
     )
 
     limitations = []
@@ -4350,7 +4484,8 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
     if access_issue:
         notes.append("当前页面更像安全验证页或 cookie wall，正文可信度不足。")
     if re.search(r"graphical abstract|highlights", f"{title} {abstract} {full_text}", re.IGNORECASE):
-        notes.append("材料里出现了 Graphical abstract 或 Highlights，适合优先回看。")
+        notes.append("材料里出现图文摘要或亮点段落，适合优先回看。")
+    notes.append("结构化生成未返回可靠内容，本笔记为证据句抽取初稿；英文片段只作为原文证据保留。")
 
     abstract_hint = first_sentence(abstract or full_text)
     figure_takeaways = (
@@ -4381,16 +4516,35 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
             ]
         )
     else:
-        one_sentence_summary = abstract_hint or f"这篇文章围绕\"{title_hint}\"展开，核心信息还需要结合正文再核实。"
-        background_context = f"这项研究放在\"{title_hint}\"的背景下，主要是为了说明为什么这个问题值得继续追问。"
-        research_question = f"作者想回答的是\"{title_hint}\"对应的关键机制、关系或因果链条到底是什么。"
+        first_evidence = abstract_hint or (finding_candidates[0] if finding_candidates else "")
+        one_sentence_summary = (
+            f"这篇论文的可用证据首先指向：{first_evidence}"
+            if first_evidence
+            else "目前只有题名和少量元数据，不能可靠写出一句话总结。"
+        )
+        background_context = (
+            "研究背景线索："
+            + " ".join(background_candidates)
+            if background_candidates
+            else "可用材料没有给出足够背景，需要回到摘要或引言确认研究动机。"
+        )
+        research_question = (
+            f"这篇研究想解释 {title_hint} 中涉及的现象、机制或证据链是否成立"
+            if title
+            else "这篇研究的核心问题目前能否从摘要或全文中可靠确认"
+        )
         core_methods = methods
         main_findings = findings
         strengths = [
-            "当前自动提取到了基础信息，但创新点和细节仍需要结合原文进一步核对。",
-            "如果后续恢复全文或图表，笔记还能继续补强证据链。",
+            "至少已有题名、摘要或正文片段，可以避免只按题名臆测研究内容。",
+            "结果和方法字段都保留了可追溯的原文证据句，便于后续人工核对。",
         ]
-        critical_analysis = "在回退模式下，这份批判性分析只能作为初稿，后续仍要回到原文核查关键证据。"
+        critical_analysis = markdown_bullets(
+            [
+                "这份自动抽取不能替代真正阅读全文；样本量、对照设计和统计处理仍需逐项核查。",
+                "如果结果字段主要来自摘要，不能把它当作全文证据使用。",
+            ]
+        )
 
     return {
         "paper_topic": title_hint or first_sentence(summary_text) or "这篇文章的主题还需要进一步确认。",
@@ -4411,9 +4565,9 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
         "figure_takeaways": figure_takeaways,
         "strengths": markdown_bullets(
             strengths,
-            fallback="当前自动提取到了基础信息，但创新点和细节仍需要结合原文进一步核对。",
+            fallback="当前材料能提供可追溯线索，但仍需要结合原文核对。",
         ),
-        "limitations": markdown_bullets(limitations, fallback="当前可用信息还不足以支持更细的局限性判断。"),
+        "limitations": markdown_bullets(limitations, fallback="当前材料未暴露出可稳定判断的具体局限，需要阅读全文后补充。"),
         "critical_analysis": critical_analysis,
         "related_concepts": (
             "\n".join(f"- [[{kw.strip()}]]" for kw in unique_keep_order(record.get("keywords", []))[:4])
@@ -4464,8 +4618,8 @@ def build_generation_prompt(material_path: Path, mode: str) -> str:
         "17. 不要编造 materials.json 里没有的事实；不确定就明确写\"不足以确认\"。特别注意：物种学名、基因名、新发现的命名（如 sp. nov.）、具体统计数字，必须只来自当前材料，绝不能依赖训练记忆补全。\n"
         "18. 如果需要引用英文术语，保持最小化，不要让整句变成英文。\n"
         "19. 在 main_findings 和 quick_reference 中，对最关键的基因名、物种名、方法名或定量数值用 **加粗** 标注；每条最多加粗 1-2 处，不要滥用。\n"
-        "20. 当 summary_mode 包含"摘要"或"元数据"时（即只有摘要可用），必须基于 abstract 字段的实际内容填写 research_question、background_context、core_methods、main_findings 等字段；"
-        "绝不能把标题原文嵌入任何分析字段作为占位符；如果摘要对某项内容确实无法回答，要写具体的不确定说明，例如"摘要未说明具体样本量"，而不是用标题文本填充。\n"
+        "20. 当 summary_mode 包含\"摘要\"或\"元数据\"时（即只有摘要可用），必须基于 abstract 字段的实际内容填写 research_question、background_context、core_methods、main_findings 等字段；"
+        "绝不能把标题原文嵌入任何分析字段作为占位符；如果摘要对某项内容确实无法回答，要写具体的不确定说明，例如\"摘要未说明具体样本量\"，而不是用标题文本填充。\n"
         "21. 输出只允许一个 JSON 对象，且键必须严格是：\n"
         "paper_topic, one_sentence_summary, background_context, research_question, data_materials, core_methods, main_findings, figure_takeaways, strengths, limitations, critical_analysis, related_concepts, quick_reference, notes\n"
     )
@@ -4498,8 +4652,8 @@ def build_rewrite_prompt(material_path: Path, draft_path: Path, mode: str) -> st
         "14. 如果英文学术术语无法自然翻成中文，可以保留最小必要英文，但整句必须是中文。\n"
         "15. 不要编造 materials.json 里没有的事实；只在已有证据上重写和润色。\n"
         "16. 在 main_findings 和 quick_reference 中，对最关键的基因名、物种名、方法名或定量数值用 **加粗** 标注；每条最多加粗 1-2 处，不要滥用。\n"
-        "17. 当 summary_mode 包含"摘要"或"元数据"时，只有摘要可用；必须基于 abstract 字段的实际内容填写各分析字段；绝不可把标题原文嵌入 research_question 或 background_context 作为占位符；"
-        "如果摘要确实不足以回答某项内容，写具体说明如"摘要未说明样本量"，而不是套用标题。\n"
+        "17. 当 summary_mode 包含\"摘要\"或\"元数据\"时，只有摘要可用；必须基于 abstract 字段的实际内容填写各分析字段；绝不可把标题原文嵌入 research_question 或 background_context 作为占位符；"
+        "如果摘要确实不足以回答某项内容，写具体说明如\"摘要未说明样本量\"，而不是套用标题。\n"
         "18. 输出只允许一个 JSON 对象，且键严格是：\n"
         "paper_topic, one_sentence_summary, background_context, research_question, data_materials, core_methods, main_findings, figure_takeaways, strengths, limitations, critical_analysis, related_concepts, quick_reference, notes\n"
     )
@@ -5454,6 +5608,7 @@ def normalize_note_record_for_output(record: dict) -> dict:
         "journal",
         "summary_mode",
         "acquisition_path",
+        "cookie_source",
         "web_url",
         "doi_url",
         "pubmed_url",
@@ -5698,6 +5853,7 @@ def save_note(record: dict, source: str, mode: str, created: str) -> Path:
             ("Web page", web_link),
             ("Local PDF", pdf_link),
             ("Acquisition path", record.get("acquisition_path", "") or ""),
+            ("Cookie source", record.get("cookie_source", "") or ""),
             ("Affiliations", "; ".join(record.get("affiliations", []))),
         ]
     )

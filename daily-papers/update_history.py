@@ -12,6 +12,7 @@ if str(SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_DIR))
 
 from user_config import daily_papers_dir, history_days_to_keep
+from date_window import parse_date
 
 
 def history_path() -> Path:
@@ -72,9 +73,10 @@ def main() -> int:
     parser.add_argument("--date", default=date.today().isoformat())
     args = parser.parse_args()
 
+    report_date = parse_date(args.date).isoformat()
     papers = json.loads(args.input_json.read_text(encoding="utf-8-sig"))
-    added = update_history(papers, args.date)
-    print(json.dumps({"history_path": str(history_path()), "added": added}, ensure_ascii=False))
+    added = update_history(papers, report_date)
+    print(json.dumps({"history_path": str(history_path()), "date": report_date, "added": added}, ensure_ascii=False))
     return 0
 
 

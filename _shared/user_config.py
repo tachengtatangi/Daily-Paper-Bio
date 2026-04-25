@@ -43,6 +43,8 @@ DEFAULT_CONFIG = {
         "efetch_workers": 5,
         "min_score": 2,
         "min_quartile": 1,
+        "reject_unknown_quartile": False,
+        "domain_boost_can_admit": False,
         "top_n": 30,
         "build_review_must_score_min": 4,
         "build_review_show_appendix": False,

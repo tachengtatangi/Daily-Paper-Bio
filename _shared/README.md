@@ -1,0 +1,373 @@
+# DailyPaper Skills（生物方向改造版）
+
+面向生物医学方向的 Codex CLI skill 流水线。每天一句话「今日论文推荐」，自动从 PubMed + bioRxiv 抓取 → 打分 → 分级 → 生成评论 → 为"必读"生成结构化笔记，全部落到本地 Obsidian vault。
+
+Fork 自 [dailypaper-skills](https://github.com/huangkiki/dailypaper-skills)（原版基于 arXiv + HuggingFace Daily），Apache-2.0。本版改为 PubMed + bioRxiv 数据源，增加中科院分区过滤、本地 PDF profile、patchright/Elsevier/bioRxiv PDF 抓取、license 校验等模块。
+
+---
+
+## 一、首次安装
+
+### 1. 拷贝 skill 目录到 Codex
+
+把整个 `skills/` 目录放到：
+
+```
+Windows: %USERPROFILE%\.codex\skills\
+Linux  : ~/.codex/skills/
+```
+
+### 2. 安装 Python 依赖
+
+```bash
+pip install -r daily-papers/requirements.txt
+pip install cryptography>=41.0.0 openpyxl
+```
+
+`paper-reader` 需要 patchright（抓带 Cloudflare 的出版商页面），可选：
+
+```bash
+pip install patchright
+patchright install chromium
+```
+
+没装 patchright 时，PubMed / bioRxiv / 本地 PDF 仍能正常工作，只是闭源期刊 PDF 抓不到。
+
+### 3. 填写 `_shared/user-config.json`
+
+必填：
+
+```json
+"paths": {
+  "obsidian_vault": "E:\\Obsidian\\Library\\Paper",
+  "temp_folder": "E:\\Chatgpt\\Project\\tmp\\daily-papers"
+}
+```
+
+可选：`preference_pdf_library_folder`（你已有的 PDF 库，用于自动提取 boost keywords）。
+
+### 4. 创建 `_shared/user-config.local.json`（敏感信息，勿进 git）
+
+模板：
+
+```json
+{
+  "sources": {
+    "ncbi_api_key": "",
+    "elsevier_api_key": ""
+  },
+  "llm": {
+    "api_key": "",
+    "base_url": "",
+    "model": "gpt-4o-mini"
+  },
+  "license_token": ""
+}
+```
+
+- `ncbi_api_key`：可选。有 key：10 req/s；无 key：3 req/s。在 <https://www.ncbi.nlm.nih.gov/account/> 免费申请。
+- `elsevier_api_key`：可选。用于 `10.1016/*` DOI 走官方全文 API。
+- `llm`：可选回退。默认优先用 Codex CLI；Codex 不可用时才尝试 OpenAI 兼容 API；都不可用则会 `RuntimeError`。
+- `license_token`：**必填**。见下一节。
+
+### 5. 生成 `license_token`
+
+本项目在 `_shared/user_config.py` 里做了 Ed25519 license 校验。**任何脚本 import 配置都会触发校验**，token 为空会抛 `配置初始化失败 [E01]`。
+
+工具脚本在 `tools/issue_license.py`。**首次使用前需生成密钥对**（只做一次，妥善保管 `private_key.secret`）：
+
+```bash
+cd tools/
+# 生成密钥对，并自动把公钥写进 _shared/user_config.py
+python issue_license.py --gen-key --update-source
+```
+
+给自己签一个永久 token：
+
+```bash
+python issue_license.py --user me --key-file private_key.secret
+```
+
+分发给朋友（推荐有效期 90 天，到期再续）：
+
+```bash
+python issue_license.py --user friend1 --days 90 --key-file private_key.secret
+```
+
+命令输出一串 base64 token，粘贴进对方的 `_shared/user-config.local.json` 的 `license_token` 字段。
+
+> **注意**：`private_key.secret` 是签发密钥，**绝不能放进分发包**。它只存在于你的本机 `tools/` 目录里。
+
+License 错误码对照：
+
+| 码 | 含义 |
+|---|---|
+| E01 | `license_token` 未填 |
+| E02 | token base64 / JSON 解码失败 |
+| E03 | 签名无效（公私钥不配对或 token 被改） |
+| E05 | token 已过期 |
+| E06 | token 里 `e` 字段日期格式非法 |
+
+---
+
+## 二、日常使用
+
+对 Codex 说：
+
+- `今日论文推荐`
+- `过去3天论文推荐`
+- `过去一周论文推荐`
+- `今日论文推荐，关键词 convergent evolution taste receptor`（临时覆盖关键词）
+
+内部会自动串联：
+
+1. **daily-papers-fetch** — 抓取 + 打分 + 富化
+2. **daily-papers-review** — 生成分级骨架 + Agent 写评论 + 写入正式推荐文件
+3. **daily-papers-notes** — 为「必读」论文调 `paper-reader` 生成结构化笔记 + 回填链接 + 刷新 MOC
+
+### 读单篇论文
+
+- `读一下这篇论文 https://pubmed.ncbi.nlm.nih.gov/41803465/` → standard 模式
+- `快速看一下这篇论文 10.1101/2024.01.01.123456` → quick 模式
+- `批判性分析这篇论文 https://example.com/article.pdf` → critical 模式
+
+支持的输入：PubMed URL、DOI / DOI URL、本地 PDF、普通网页链接。
+
+**本地 PDF 附加选项 `--local-only`**：完全跳过网络元数据补全（OpenAlex / PubMed / Elsevier API），只从 PDF 本身提取文本和图片。速度最快，适合已知论文直接快读的场景：
+
+```powershell
+python ..\paper-reader\run_reader.py "D:\papers\mypaper.pdf" --mode standard --local-only
+```
+
+---
+
+## 三、配置项速查
+
+所有配置在 `_shared/user-config.json`（主配置）+ `user-config.local.json`（敏感，不进 git）。两者深度 merge，local 优先。
+
+### paths
+| key | 说明 |
+|---|---|
+| `obsidian_vault` | Obsidian 仓库根路径（**必填**） |
+| `paper_notes_folder` | 笔记根目录，默认 `PaperNotes` |
+| `daily_papers_folder` | 每日推荐目录，默认 `DailyPapers` |
+| `concepts_folder` | 概念图谱目录，默认 `_concepts` |
+| `pdf_figure_folder` | PDF 首图保存目录，默认 `AllPdfFig` |
+| `temp_folder` | 流水线中间 JSON 目录，留空自动 `~/tmp` |
+| `preference_pdf_library_folder` | 本地 PDF 库路径，用于自动 profile |
+
+### sources
+| key | 说明 |
+|---|---|
+| `pubmed_enabled` | 是否抓 PubMed |
+| `biorxiv_enabled` | 是否抓 bioRxiv |
+| `biorxiv_retmax` | bioRxiv 单次最多抓条数 |
+| `biorxiv_categories` | bioRxiv 分区白名单（类比原版 `arxiv_categories`） |
+| `ncbi_api_key` / `elsevier_api_key` | API Key，放 local |
+
+### daily_papers
+| key | 说明 |
+|---|---|
+| `keywords` | 正向关键词（PubMed 检索 + 本地打分） |
+| `domain_boost_keywords` | 领域加分词（只加分不准入） |
+| `negative_keywords` | 负面词，命中立拒 |
+| `rejected_journals` | 期刊名黑名单（个人口味） |
+| `min_score` | 最低入选分数 |
+| `min_quartile` | **CAS 分区阈值**。`1`=只 Q1；`2`=Q1+Q2；`3`=Q1~Q3；`4`=全接受。bioRxiv 不受此过滤影响 |
+| `top_n` | 每天保留条数（多天模式自动 × days） |
+| `build_review_must_score_min` | 「必读」分数门槛 |
+| `notes_parallelism` | 必读笔记并发数 |
+| `update_profile_from_pdf_library` | 是否用本地 PDF 库刷新 boost 词 |
+
+### automation
+| key | 说明 |
+|---|---|
+| `auto_refresh_indexes` | 每次跑完是否刷 MOC |
+| `git_commit` / `git_push` | 是否自动 commit / push vault |
+
+---
+
+## 四、流水线全景
+
+```
+┌─ 用户说「今日论文推荐」
+│
+├─ daily-papers-fetch
+│  ├── fetch_and_score.py
+│  │   ├── 读配置 + apply_library_profile（可选扫本地 PDF 库）
+│  │   ├── PubMed：esearch → efetch XML → CAS 分区过滤 → 词干打分
+│  │   ├── bioRxiv：details API 并发游标 → 分区过滤 → 打分
+│  │   ├── dedup（source/doi/pmid/title）+ history dedup（30 天滚动）
+│  │   └── → {TEMP}/daily_papers_top30.json + filter_audit.json
+│  └── enrich_papers.py
+│      └── 异步 curl 并发 PMC/Europe PMC/bioRxiv HTML → → enriched.json
+│
+├─ daily-papers-review
+│  ├── build_review.py：按分数分级（必读 30% / 值得看 40% / 可跳过 30%），
+│  │   生成 draft（评论留空）
+│  ├── Agent 亲笔写：顶部锐评 / 每篇推荐理由 / 每篇摘要短评
+│  ├── 写入 {VAULT}/DailyPapers/YYYY-MM-DD-论文推荐.md
+│  ├── 删 draft
+│  ├── update_history.py：把 top30 id 追加到 .history.json
+│  └── 可选 git commit/push
+│
+├─ daily-papers-notes
+│  ├── 筛「必读」
+│  ├── 对每篇调 paper-reader/run_reader.py（并发 notes_parallelism）
+│  │   ├── PubMed URL → E-utilities 元数据
+│  │   ├── 10.1101/* → _fetch_biorxiv_direct（直接 urllib 抓 .full.pdf）
+│  │   ├── 10.1016/* + Elsevier API key → curl Elsevier API
+│  │   └── 其他 → patchright (CDP Chrome) 绕 Cloudflare + PDF + Fig1
+│  ├── backfill_links.py：回填笔记链接到推荐文件
+│  ├── generate_paper_mocs.py / generate_concept_mocs.py
+│  └── 可选 git commit/push
+│
+└─ 输出：
+   ├── {VAULT}/DailyPapers/YYYY-MM-DD-论文推荐.md
+   ├── {VAULT}/PaperNotes/_inbox/<PMID> - <title>.md
+   └── {VAULT}/PaperNotes/PaperNotes.md（MOC）
+```
+
+---
+
+## 五、打分规则
+
+**PubMed 抓取流程**（类比原版 arXiv categories → 本地打分）：
+1. esearch：`journal article[pt] AND hasabstract[text]` + 日期范围，拉取最近 `search_retmax` 条 PMID
+2. efetch XML：100 篇一批解析
+3. **CAS 分区过滤**：`quartile > min_quartile` → 丢弃（记入 `rejected_quartile`）
+4. **keyword 预筛**：title + abstract 中无任何 keyword token 匹配 → 丢弃（记入 `rejected_no_keyword`），此步骤令后续打分只处理有意义的候选
+5. **完整打分**：`score_paper()` → score < min_score → 丢弃
+
+每篇论文最终 `score`：
+
+- **标题**命中 `keywords` → +3 / 条
+- **摘要 / paper keywords**命中 `keywords` → +1 / 条（标题已中的不再计）
+- `domain_boost_keywords` 命中 ≥ 2 个 → +2；= 1 个 → +1
+- `domain_boost_keywords` 在标题里命中 → 额外 +1
+- **负向硬过滤**：命中 `negative_keywords` 或 `rejected_journals` → -999（直接丢）
+- **CAS 硬过滤**（仅 PubMed）：`quartile > min_quartile` → 直接丢（计入 `rejected_quartile` 审计）
+
+关键词匹配使用 **词根归一化 + 多词窗口匹配**，只做复数归一（`genes → gene`, `studies → study`），不再对 `-ing/-ed/-ly/-ation` 等做激进抽根。如果你要让关键词匹配 `enhancer` / `enhanced` / `enhancing`，用 `CANONICAL_VARIANTS` 显式配置。
+
+---
+
+## 六、常见问题
+
+**Q：朋友第一次跑就报 `[E01]`？**
+A：`user-config.local.json` 里 `license_token` 没填。用 `tools/issue_license.py` 给他签一个。
+
+**Q：PubMed 抓回一堆 IDs 但最后只剩几条？**
+A：大概率是 CAS 分区过滤。把 `min_quartile` 从 1 调到 2 或 3 放宽，再看 `{TEMP}/daily_papers_filter_audit.json` 里 `rejected_quartile` 详情。
+
+**Q：bioRxiv 全部拿不到？**
+A：检查 `biorxiv_categories` 是否匹配你的方向。category 名大小写敏感但脚本已做 normalize，不用太介意。
+
+**Q：LLM 不可用报错？**
+A：要么登录 Codex CLI（`codex --version` 可用），要么在 `user-config.local.json` 的 `llm.api_key` 填一个 OpenAI 兼容 key。review 阶段报错时推荐文件顶部会加横幅提示。
+
+**Q：必读笔记只拿到摘要没拿到全文？**
+A：
+- bioRxiv：应该直接抓到 `.full.pdf`。拿不到先 curl 一下那个 URL 看是否 403/404。
+- 闭源期刊：需要 `patchright install chromium`。
+- Elsevier：填 `elsevier_api_key`。
+
+**Q：我的 vault 改动会自动提交到 git 吗？**
+A：默认 `git_commit=false` / `git_push=false`。打开后会在 `obsidian_vault` 目录里 `git add` 当日推荐文件和必读笔记并 commit。失败只警告，不中断流程。
+
+---
+
+## 七、分发给朋友
+
+### 打包清单
+
+分发包里 **包含**：
+
+```
+skills/
+├── _shared/
+│   ├── user_config.py          ← 内含公钥，可公开
+│   ├── user-config.json        ← 主配置模板（先清空你的个人路径和关键词）
+│   ├── user-config.local.json.example   ← 见下方说明
+│   ├── cas_quartiles.py
+│   ├── generate_paper_mocs.py
+│   ├── generate_concept_mocs.py
+│   ├── moc_builder.py
+│   └── data/
+├── paper-reader/
+├── daily-papers/
+├── daily-papers-fetch/
+├── daily-papers-review/
+├── daily-papers-notes/
+├── generate-mocs/
+├── playwright/
+├── codex-primary-runtime/
+├── tools/
+│   └── issue_license.py        ← 签发工具（无私钥）
+└── README.md
+```
+
+分发包里 **排除**：
+
+| 文件 | 原因 |
+|---|---|
+| `_shared/user-config.local.json` | 含你的 API key + token，**绝对不能分发** |
+| `tools/private_key.secret` | 签发私钥，只在你本机保留 |
+| `_shared/__pycache__/` | 编译缓存，不需要 |
+| `paper-reader/assets/` | 可选，含 zotero_helper 等实验性脚本 |
+
+### 制作模板文件
+
+把你的 `user-config.json` 里的个人信息（路径、keywords）改成占位符后另存为分发版；
+同时创建一个 example 文件让接收者知道要填什么：
+
+```json
+// user-config.local.json.example
+{
+  "_comment": "复制此文件为 user-config.local.json，填入你自己的密钥。",
+  "sources": {
+    "ncbi_api_key": "在 https://www.ncbi.nlm.nih.gov/account/ 免费申请",
+    "elsevier_api_key": "选填，只有读 Elsevier 全文时才需要"
+  },
+  "llm": {
+    "api_key": "",
+    "base_url": "",
+    "model": "gpt-4o-mini"
+  },
+  "license_token": "由分发者签发，填入此处"
+}
+```
+
+### 操作步骤
+
+```bash
+# 1. 给朋友签一个 90 天 token
+cd tools/
+python issue_license.py --user friend1 --days 90 --key-file private_key.secret
+
+# 2. 打包（PowerShell）
+$src = "$env:USERPROFILE\.codex\skills"
+$dst = "D:\share\dailypaper-skills.zip"
+$exclude = @("user-config.local.json", "private_key.secret", "__pycache__")
+# 用 7-Zip 或资源管理器右键压缩后，手动删除上述文件
+
+# 3. 把 zip + token 发给朋友
+#    朋友解压到 %USERPROFILE%\.codex\skills\
+#    然后按 README 第一章操作
+```
+
+### 接收者需要自己准备
+
+- Codex CLI（登录自己账号）
+- Python 3.10+
+- `pip install -r daily-papers/requirements.txt`
+- 修改 `_shared/user-config.json` 里的 `paths.obsidian_vault` 和 `paths.temp_folder`
+- 把 token 和（可选）API key 填入 `_shared/user-config.local.json`
+
+---
+
+## 八、授权
+
+- 代码：Apache-2.0（继承自原版）
+- CAS 分区数据：`_shared/data/cas_quartiles_2025.xlsx`，仅用于本人/朋友研究用途
+- License token 机制仅用于限制分发层面的使用窗口，不影响代码 fork

@@ -31,11 +31,16 @@ python ..\paper-reader\run_reader.py "<source>" --mode standard
 - `快速看一下这篇论文 ...` -> `--mode quick`
 - `批判性分析这篇论文 ...` -> `--mode critical`
 
-本地 PDF 附加选项：
+本地 PDF 默认行为与附加选项：
 
-- `--local-only`：完全跳过网络元数据补全（OpenAlex / PubMed / Elsevier API）。
-  只从 PDF 本身提取文本和图片，速度最快。
-  **何时使用**：用户已知道这是哪篇论文，直接指定了本地路径，不需要 PMID 关联或网络标题修正时。
+- **默认（推荐）**：直接用 `--mode standard` 或 `--mode standard --prefer-visible-browser`，**不要加 `--local-only`**。
+  这样会用 OpenAlex + PubMed API（纯 HTTP，约 1-2 秒）补全 PMID、作者、期刊、摘要等元数据，
+  全文内容仍来自本地 PDF，不会触发浏览器抓取。
+  **PMID 能被正确填入，笔记质量更好。**
+
+- `--local-only`：完全跳过所有网络请求（OpenAlex / PubMed / Elsevier API 都不调用）。
+  PMID 将为空，元数据仅来自 PDF 本身。
+  **仅在确实无网络连接时使用。**
 
 例如：
 
@@ -43,9 +48,26 @@ python ..\paper-reader\run_reader.py "<source>" --mode standard
 python ..\paper-reader\run_reader.py "https://pubmed.ncbi.nlm.nih.gov/41803465/" --mode standard
 python ..\paper-reader\run_reader.py "10.1007/s10822-026-00780-y" --mode standard
 python ..\paper-reader\run_reader.py "<LOCAL_PDF_PATH>" --mode standard
+python ..\paper-reader\run_reader.py "<LOCAL_PDF_PATH>" --mode standard --prefer-visible-browser
 python ..\paper-reader\run_reader.py "<LOCAL_PDF_PATH>" --mode standard --local-only
 python ..\paper-reader\run_reader.py "https://example.com/article" --mode critical
 ```
+
+## 浏览器 / Cookies
+
+需要出版社全文或 PDF 时，优先使用：
+
+```powershell
+python ..\paper-reader\run_reader.py "<DOI_OR_URL>" --mode standard --prefer-visible-browser
+```
+
+patchright 抓取顺序：
+
+1. 如果 `PAPER_READER_CDP_URL` / `CHROME_CDP_URL` 指向一个已开启 remote debugging 的 Chrome，优先连接它，cookie 来源记为 `existing_cdp_browser`。
+2. 否则尝试用真实 Chrome `User Data` 目录启动 CDP Chrome；如果 profile 未被占用，cookie 来源记为 `real_chrome_profile`。
+3. 如果默认 profile 正在运行，只能回退临时 profile，cookie 来源记为 `temp_profile_no_cookies`。这类结果不能假定带有机构登录 cookies。
+
+如果必须复用正在打开的日常 Chrome cookies，需要先用 remote debugging 启动 Chrome，然后设置 `PAPER_READER_CDP_URL`。
 
 ## 输入处理
 

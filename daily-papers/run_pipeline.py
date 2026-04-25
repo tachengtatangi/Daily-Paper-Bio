@@ -37,6 +37,7 @@ from user_config import (
     set_daily_papers_profile_update_flag,
     temp_file_path,
 )
+from date_window import parse_window
 
 # Ensure all vault output directories exist before any pipeline stage runs.
 ensure_vault_dirs()
@@ -222,10 +223,11 @@ def main() -> int:
     parser.add_argument("--refresh-profile", action="store_true")
     args = parser.parse_args()
 
-    _dp = args.date.split("-")
-    target_date = date(int(_dp[0]), int(_dp[1]), int(_dp[2]))
-    days = max(1, args.days)
-    start_date = target_date - timedelta(days=days - 1)
+    window = parse_window(args.date, args.days)
+    target_date = window.end
+    days = window.days
+    start_date = window.start
+    report_date = window.report_date
 
     override_keywords = parse_keywords_override(args.keywords)
     should_auto_reset_profile_flag = bool(FETCH._CONFIG.get("update_profile_from_pdf_library", False))
@@ -259,15 +261,35 @@ def main() -> int:
     enriched_json_path = temp_file_path("daily_papers_enriched.json")
     enriched_json_path.write_text(json.dumps(enriched, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    window_json_path = temp_file_path("daily_papers_window.json")
+    window_json_path.write_text(
+        json.dumps(
+            {
+                "report_date": report_date,
+                "window_start": window.start_date,
+                "window_end": window.end_date,
+                "days": days,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
     draft_suffix = getattr(REVIEW, "DRAFT_SUFFIX", "论文推荐.draft.md")
-    draft_path = temp_file_path(f"{args.date}-{draft_suffix}")
-    draft_path.write_text(REVIEW.build_markdown(enriched, args.date), encoding="utf-8-sig")
+    draft_path = temp_file_path(f"{report_date}-{draft_suffix}")
+    draft_path.write_text(REVIEW.build_markdown(enriched, report_date), encoding="utf-8-sig")
 
     summary = {
         "draft_path": str(draft_path),
         "top_json_path": str(top_json_path),
         "enriched_json_path": str(enriched_json_path),
         "filter_audit_path": str(filter_audit_path),
+        "window_json_path": str(window_json_path),
+        "report_date": report_date,
+        "window_start": window.start_date,
+        "window_end": window.end_date,
+        "days": days,
         "candidate_count": len(enriched),
         "keywords": override_keywords or FETCH.KEYWORDS,
         "profile_boost_keywords": getattr(FETCH, "PROFILE_BOOST_KEYWORDS", []),

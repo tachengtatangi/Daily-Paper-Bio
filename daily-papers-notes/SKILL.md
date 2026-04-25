@@ -34,10 +34,10 @@ description: |
 2. 对每篇必读论文运行：
 
 ```powershell
-python ..\paper-reader\run_reader.py "{PUBMED_URL_OR_DOI}" --mode standard --no-playwright
+python ..\paper-reader\run_reader.py "{PUBMED_URL_OR_DOI}" --mode standard --prefer-visible-browser
 ```
 
-> `--no-playwright` 跳过出版社浏览器抓取，仅走 PMC free-text（纯 API）。自动流水线中 Chromium 可能未安装，加此参数可避免长时间等待后退回摘要。
+> `--prefer-visible-browser` 优先通过 patchright / 浏览器路径尝试获取出版社全文与 PDF，并尽量沿用真实 Chrome profile 中的机构 cookies。只有在无浏览器、CI 或明确只想跑 PMC/API 摘要模式时，才临时加 `--no-playwright`。
 
 3. 如果已有旧笔记但内容明显不完整，不要直接删除；先重命名为 `*.bak-YYYYMMDD-HHMMSS.md`，再重生成。
 4. 运行回填：

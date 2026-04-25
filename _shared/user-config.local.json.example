@@ -1,0 +1,16 @@
+{
+  "_comment": "复制此文件为 user-config.local.json，填入你自己的密钥。此文件可以公开，.local.json 不能。",
+  "sources": {
+    "ncbi_api_key": "",
+    "_ncbi_comment": "可选。在 https://www.ncbi.nlm.nih.gov/account/ 免费申请，有 key 时 PubMed 速率从 3次/秒 提升到 10次/秒。",
+    "elsevier_api_key": "",
+    "_elsevier_comment": "可选。只有读 Elsevier / ScienceDirect 全文时才需要。"
+  },
+  "llm": {
+    "_comment": "可选回退。默认优先用 Codex CLI；Codex 不可用时才尝试此处的 OpenAI 兼容 API。",
+    "api_key": "",
+    "base_url": "",
+    "model": "gpt-4o-mini"
+  },
+  "license_token": ""
+}

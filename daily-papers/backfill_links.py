@@ -25,6 +25,7 @@ if str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
 
 from user_config import daily_papers_dir, paper_notes_dir
+from date_window import parse_date
 
 REPORT_SUFFIX = "论文推荐.md"
 NOTE_LINK_LABEL = "笔记"
@@ -141,6 +142,7 @@ def backfill(report_date: str) -> int:
 
     Returns number of links inserted.
     """
+    report_date = parse_date(report_date).isoformat()
     daily_dir  = daily_papers_dir()
     report_path = daily_dir / f"{report_date}-{REPORT_SUFFIX}"
     if not report_path.exists():
@@ -272,8 +274,9 @@ def main() -> int:
         help="Report date (YYYY-MM-DD), default: today"
     )
     args = parser.parse_args()
-    n = backfill(args.date)
-    print(json.dumps({"date": args.date, "inserted": n}, ensure_ascii=False))
+    report_date = parse_date(args.date).isoformat()
+    n = backfill(report_date)
+    print(json.dumps({"date": report_date, "inserted": n}, ensure_ascii=False))
     return 0
 
 
