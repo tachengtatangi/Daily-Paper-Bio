@@ -165,7 +165,7 @@ def _build_split_table(sections: dict[str, list[dict]], note_cache: dict[int, st
             continue
         items: list[str] = []
         for paper in papers:
-            note_name = note_cache.get(id(paper))
+            note_name = note_cache.get(id(paper)) if label == LABEL_MUST else None
             kws = display_keywords(paper)
             hint = kws[0] if kws else ""
             if note_name:
@@ -271,12 +271,13 @@ def build_markdown(papers: list[dict], today: str) -> str:
             or normalize_text(paper.get("method_summary", ""))
             or _default_abstract_comment(paper)
         )
-        note = note_cache.get(id(paper))
+        bucket_label = bucket_by_id.get(id(paper), LABEL_SKIP)
+        note = note_cache.get(id(paper)) if bucket_label == LABEL_MUST else None
 
         lines.extend([
             f"### {idx}. {title}",
             "",
-            _field(LABEL_LEVEL, f"`{bucket_by_id.get(id(paper), LABEL_SKIP)}`", bold=True),
+            _field(LABEL_LEVEL, f"`{bucket_label}`", bold=True),
             _field(LABEL_SCORE, f"`{paper.get('score', 0)}`"),
             _field(LABEL_SOURCE, f"`{paper.get('source', 'unknown')}`"),
             _field(LABEL_DATE, f"`{paper.get('date', '')}`"),

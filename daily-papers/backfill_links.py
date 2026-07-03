@@ -33,6 +33,7 @@ ID_LINE_RE       = re.compile(r"^\s*-\s*ID:\s*`([^`]+)`")
 LINKS_LINE_RE    = re.compile(r"PubMed\]\(https://pubmed\.ncbi\.nlm\.nih\.gov/(\d+)/\)")
 DOI_LINE_RE      = re.compile(r"(?:doi\.org|DOI)[:/]\s*(10\.\d{4,}/\S+)", re.IGNORECASE)
 BIORXIV_DOI_RE   = re.compile(r"10\.\d{4,}/(\d{4}\.\d{2}\.\d{2}\.\d+)")
+LEVEL_LINE_RE    = re.compile(r"^\s*-\s*(?:\*\*)?分级(?:\*\*)?:\s*`?([^`]+)`?", re.IGNORECASE)
 
 
 def _build_note_index(notes_root: Path) -> dict[str, str]:
@@ -77,7 +78,8 @@ def _safe_title_prefix(text: str) -> str:
 
 
 SPLIT_ROW_RE = re.compile(r"^\| ([^\|]+) \| (.+) \|$")
-SPLIT_LABELS = {"必读", "值得看", "可跳过"}
+MUST_LABEL = "必读"
+SPLIT_LABELS = {MUST_LABEL, "值得看", "可跳过"}
 
 
 def _backfill_split_table(lines: list[str], title_to_note: dict[str, str]) -> int:
@@ -97,7 +99,7 @@ def _backfill_split_table(lines: list[str], title_to_note: dict[str, str]) -> in
         if not m:
             continue
         label = m.group(1).strip()
-        if label not in SPLIT_LABELS:
+        if label != MUST_LABEL:
             continue
         cell = m.group(2)
         entries = [e.strip() for e in cell.split(" · ")]
@@ -168,6 +170,15 @@ def backfill(report_date: str) -> int:
         # Check if note link already present in this block
         block_lines = lines[start : end + 1]
         already_has_link = any(NOTE_LINK_RE.match(ln) for ln in block_lines)
+
+        level = ""
+        for ln in block_lines:
+            m = LEVEL_LINE_RE.match(ln)
+            if m:
+                level = m.group(1).strip().strip("`").strip()
+                break
+        if level != MUST_LABEL:
+            continue
 
         # Extract paper ID from  - ID: `xxx`  line
         paper_id = ""
