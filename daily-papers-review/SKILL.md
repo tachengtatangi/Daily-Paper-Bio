@@ -317,17 +317,10 @@ python ..\daily-papers\update_history.py "{TEMP_DIR}\daily_papers_enriched.json"
 - 不要像模型在“总结输入”
 - 如果一句话放到任何一天、任何主题的推荐里都成立，那这句话就不合格
 
-## LLM 失败处理
+## 增强失败处理
 
-如果流水线任意环节抛出含 `[llm_client] LLM 不可用` 的 `RuntimeError`，
-在推荐文件顶部（锐评之前）插入以下横幅，然后继续用原始摘要完成点评：
-
-```
-> ⚠️ **LLM 摘要增强失败**：Codex CLI 和 API Key 均无响应，
-> 以下摘要短评基于原始摘要，未经 LLM 增强。
-> 如需增强，请检查 user-config.local.json 中 llm.api_key 或 Codex CLI 登录状态。
-```
-
+如果富化阶段没有拿到额外摘要、方法名或网页元数据，不要把它解释成论文为空。
+在点评里明确标注“仅基于 PubMed / bioRxiv 原始摘要”，然后继续完成分流和人工锐评。
 ## 保存与收尾
 
 完成评论后：

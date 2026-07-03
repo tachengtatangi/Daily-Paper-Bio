@@ -37,10 +37,10 @@ pdfimages -png /tmp/paper.pdf {笔记所在目录}/assets/{方法名}_fig
 
 ## 选择性本地化（解决外链不可达）
 
-arXiv 外链在某些网络环境下不稳定。笔记保存后自动运行可达性检查：
+arXiv 外链在某些网络环境下不稳定。此逻辑仅保留为 legacy arXiv 工作流的手动排查入口：
 
 ```bash
-python3 ../daily-papers/download_note_images.py "{笔记路径}"
+python3 ../daily-papers/legacy/download_note_images.py "{笔记路径}"
 ```
 
 脚本行为：

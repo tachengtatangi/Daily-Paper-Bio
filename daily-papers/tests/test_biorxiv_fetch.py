@@ -4,9 +4,9 @@
 无需 user_config / cas_quartiles / library_profile，所有参数内联。
 
 用法：
-    python test_biorxiv_fetch.py                     # 测试今天
-    python test_biorxiv_fetch.py --date 2025-08-26   # 测试指定单日
-    python test_biorxiv_fetch.py --days 3            # 测试过去3天
+    python tests/test_biorxiv_fetch.py                     # 测试今天
+    python tests/test_biorxiv_fetch.py --date 2025-08-26   # 测试指定单日
+    python tests/test_biorxiv_fetch.py --days 3            # 测试过去3天
 """
 from __future__ import annotations
 
