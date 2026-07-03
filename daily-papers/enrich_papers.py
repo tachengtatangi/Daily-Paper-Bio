@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import html as html_lib
 import json
 import re
 import sys
@@ -60,7 +61,19 @@ METHOD_STOP = {
     "ML", "AI", "CI", "OR", "HR",
     # Roman numerals
     "II", "III", "IV", "VI", "VII", "VIII", "IX", "XI", "XII",
+    # Web/page chrome often found in publisher pages
+    "PDF", "HTML", "XML", "RIS", "ORCID", "CrossRef", "PubMedSearch",
+    "ScholarFind", "BibTeX", "Bookends", "EasyBib", "EndNote", "Medlars",
+    "Mendeley", "Papers", "RefWorks", "Zotero", "Tweet", "Facebook",
+    "Google",
 }
+
+PAGE_CHROME_TOKENS = (
+    "bibtex", "bookends", "easybib", "endnote", "medlars", "mendeley",
+    "refworks", "ref manager", "ris", "zotero", "citation manager",
+    "citation manager formats", "download citation", "tweet widget",
+    "facebook like", "google plus one", "share this article",
+)
 
 # ── Real-world (in vivo / clinical) keywords ─────────────────────────────────
 
@@ -120,7 +133,14 @@ async def curl_fetch(url: str, sem: asyncio.Semaphore,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def strip_tags(html: str) -> str:
-    return re.sub(r"<[^>]+>", "", html)
+    return html_lib.unescape(re.sub(r"<[^>]+>", "", html))
+
+
+def looks_like_page_chrome(text: str) -> bool:
+    """Return True when extracted text is publisher navigation/export chrome."""
+    low = re.sub(r"\s+", " ", html_lib.unescape(text or "")).strip().lower()
+    hits = sum(1 for token in PAGE_CHROME_TOKENS if token in low)
+    return hits >= 2 or "citation manager formats" in low
 
 
 def extract_figure_url(html: str) -> str:
@@ -130,7 +150,11 @@ def extract_figure_url(html: str) -> str:
         html, re.DOTALL | re.IGNORECASE
     )
     skip = {"icon", "logo", "badge", "orcid", "creative", "arrow", "button",
-            "check", "expand", "close", "menu", "spinner", "loading"}
+            "check", "expand", "close", "menu", "spinner", "loading",
+            "twitter", "tweet", "facebook", "fb-", "fb_", "google",
+            "share", "social", "linkedin", "reddit", "pinterest",
+            "mendeley", "zotero", "endnote", "refworks", "citation",
+            "email", "print", "rss", "altmetric"}
     for fig, _ in figures:
         low = fig.lower()
         if any(s in low for s in skip):
@@ -187,7 +211,7 @@ def extract_section_headers(html: str) -> list[str]:
     for m in re.finditer(r"<h[2-4][^>]*>(.*?)</h[2-4]>", html, re.DOTALL):
         text = strip_tags(m.group(1)).strip()
         text = re.sub(r"^\d+(\.\d+)*\.?\s*", "", text)
-        if text and len(text) < 200:
+        if text and len(text) < 200 and not looks_like_page_chrome(text):
             headers.append(text)
     return headers[:20]
 
@@ -200,7 +224,7 @@ def extract_captions(html: str) -> list[str]:
     ):
         text = strip_tags(m.group(1)).strip()
         text = re.sub(r"\s+", " ", text)
-        if 10 <= len(text) <= 300:
+        if 10 <= len(text) <= 300 and not looks_like_page_chrome(text):
             captions.append(text)
     return captions[:8]
 
@@ -259,6 +283,8 @@ def extract_method_summary(html: str) -> str:
         return ""
     section = re.sub(r"\s+", " ", strip_tags(m.group(1))).strip()
     section = re.sub(r"\s*\[\d+(?:,\s*\d+)*\]", "", section)
+    if looks_like_page_chrome(section):
+        return ""
     if len(section) > 500:
         end = section.rfind(". ", 300, 550)
         section = section[:end + 1] if end > 0 else section[:500].rsplit(" ", 1)[0] + "..."
