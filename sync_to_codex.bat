@@ -1,40 +1,31 @@
 @echo off
-:: sync_to_codex.bat — 把 Project 目录的 skill 同步到 codex 运行目录
-:: 用法: 在 dailypaper-skills\ 下双击运行，或在修改后调用
+setlocal
 
-set SRC=%~dp0
-if "%SRC:~-1%"=="\" set SRC=%SRC:~0,-1%
-set DST=C:\Users\10312\.codex\skills
+:: Sync this repository's Codex skill folders into the current user's Codex skills directory.
+:: Existing _shared\user-config.json and _shared\user-config.local.json are preserved.
+:: Usage: run from the repository root, or double-click this file.
 
-echo [sync] %SRC% → %DST%
+set "SRC=%~dp0"
+if "%SRC:~-1%"=="\" set "SRC=%SRC:~0,-1%"
+set "DST=%USERPROFILE%\.codex\skills"
+set "BACKUP=%TEMP%\daily-paper-bio-sync-%RANDOM%"
 
-:: paper-reader
-xcopy /Y /Q "%SRC%\paper-reader\run_reader.py"   "%DST%\paper-reader\"
-xcopy /Y /Q "%SRC%\paper-reader\pdf_fetcher.py"  "%DST%\paper-reader\"
-xcopy /Y /Q "%SRC%\paper-reader\publisher_rules.py" "%DST%\paper-reader\"
-xcopy /Y /Q "%SRC%\paper-reader\paper_daemon.py" "%DST%\paper-reader\"
-xcopy /Y /Q "%SRC%\paper-reader\SKILL.md"        "%DST%\paper-reader\"
-xcopy /Y /E /Q "%SRC%\paper-reader\assets\"      "%DST%\paper-reader\assets\"
-xcopy /Y /E /Q "%SRC%\paper-reader\references\"  "%DST%\paper-reader\references\"
+echo [sync] %SRC% -^> %DST%
+if not exist "%DST%" mkdir "%DST%"
+mkdir "%BACKUP%" >nul 2>nul
 
-:: _shared
-xcopy /Y /Q "%SRC%\_shared\user-config.json"         "%DST%\_shared\"
-xcopy /Y /Q "%SRC%\_shared\user-config.local.json.example" "%DST%\_shared\"
-xcopy /Y /Q "%SRC%\_shared\README.md"                "%DST%\_shared\"
-xcopy /Y /Q "%SRC%\_shared\user_config.py"            "%DST%\_shared\"
-xcopy /Y /Q "%SRC%\_shared\date_window.py"            "%DST%\_shared\"
-xcopy /Y /Q "%SRC%\_shared\cas_quartiles.py"          "%DST%\_shared\"
-xcopy /Y /Q "%SRC%\_shared\moc_builder.py"            "%DST%\_shared\"
-xcopy /Y /Q "%SRC%\_shared\generate_concept_mocs.py"  "%DST%\_shared\"
-xcopy /Y /Q "%SRC%\_shared\generate_paper_mocs.py"    "%DST%\_shared\"
-xcopy /Y /E /Q "%SRC%\_shared\data\"                  "%DST%\_shared\data\"
+if exist "%DST%\_shared\user-config.json" copy /Y "%DST%\_shared\user-config.json" "%BACKUP%\user-config.json" >nul
+if exist "%DST%\_shared\user-config.local.json" copy /Y "%DST%\_shared\user-config.local.json" "%BACKUP%\user-config.local.json" >nul
 
-:: daily-papers
-xcopy /Y /E /Q "%SRC%\daily-papers\"     "%DST%\daily-papers\"
-xcopy /Y /E /Q "%SRC%\daily-papers-fetch\"  "%DST%\daily-papers-fetch\"
-xcopy /Y /E /Q "%SRC%\daily-papers-notes\"  "%DST%\daily-papers-notes\"
-xcopy /Y /E /Q "%SRC%\daily-papers-review\" "%DST%\daily-papers-review\"
-xcopy /Y /E /Q "%SRC%\generate-mocs\"   "%DST%\generate-mocs\"
+for %%D in (_shared paper-reader daily-papers daily-papers-fetch daily-papers-review daily-papers-notes generate-mocs playwright) do (
+  echo [sync] %%D
+  if not exist "%DST%\%%D" mkdir "%DST%\%%D"
+  xcopy /Y /E /Q "%SRC%\%%D\" "%DST%\%%D\" >nul
+)
 
-echo [sync] Done.
+if exist "%BACKUP%\user-config.json" copy /Y "%BACKUP%\user-config.json" "%DST%\_shared\user-config.json" >nul
+if exist "%BACKUP%\user-config.local.json" copy /Y "%BACKUP%\user-config.local.json" "%DST%\_shared\user-config.local.json" >nul
+rmdir /S /Q "%BACKUP%" >nul 2>nul
+
+echo [sync] Done. Existing user config files were preserved.
 pause
