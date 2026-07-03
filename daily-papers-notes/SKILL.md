@@ -67,13 +67,7 @@ python ..\_shared\generate_paper_mocs.py
 python ..\_shared\generate_concept_mocs.py
 ```
 
-6. 全部必读笔记、回填、索引刷新完成后清理 MinerU 缓存，只保留 Markdown 文本证据：
-
-```powershell
-python ..\daily-papers\cleanup_runtime_artifacts.py --apply
-```
-
-> 清理只删除 `AllPdfFig\mineru` 下的非 `.md` 中间文件（PDF 副本、JSON、切图等）。不要在多篇必读笔记仍在并发生成时运行全局清理。
+> MinerU 中间文件由 `paper-reader` 在每篇笔记成功写入后自动清理；正常 notes 流程不需要额外调用清理脚本。`cleanup_runtime_artifacts.py` 仅用于手动清理历史缓存。
 
 ## 质量要求
 
