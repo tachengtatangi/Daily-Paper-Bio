@@ -75,11 +75,8 @@ patchright 抓取策略（优先级）：
 ## Figure 下载策略
 
 - Figure 1 优先从出版社 HTML/DOM 中下载真实图片文件，不把截图当作成功结果。
-- 当前已按生产路径验证的出版社规则：
-  - Science / PNAS / Cell：DOM 中有真实图片 URL，但普通 HTTP 可能 403；使用文章页面内 `fetch(..., credentials: 'include')` 获取 image bytes。
-  - Nature：`media.springernature.com` 图像可直接下载。
-  - OUP / Molecular Biology and Evolution：优先解析 `/view-large/figure/...` 或 Silverchair signed CDN 大图；拒绝明显缩略图，失败时回退 PDF Figure 裁图。
-  - Wiley：优先用浏览器 profile 的 context.request 直接抓文章 HTML，解析 cms/asset/...-fig-0001-m.jpg 并扩展为高分辨率 ...-fig-0001.jpg 后下载；普通 HTTP 403/Cloudflare 时不视为 URL 规则失败。
+- 出版社 PDF/Fig1 URL 规则和 F12 调试记录维护在 `references/publisher-assets.md`。
+- 代码可消费的规则维护在 `publisher_rules.py`；当出版社 URL 改版时，先更新 reference 记录，再更新规则函数。
 - HTML 图必须满足真实 `image/*` 响应且不是明显缩略图；否则继续尝试下一个候选或回退到 PDF 裁图。
 - 如果网页图和 PDF 图都不可得，不阻塞正文笔记生成；Figures 部分降级为空或仅保留文字分析。
 

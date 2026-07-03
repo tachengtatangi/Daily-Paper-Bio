@@ -11,6 +11,5 @@
     "api_key": "",
     "base_url": "",
     "model": "gpt-4o-mini"
-  },
-  "license_token": ""
+  }
 }

@@ -11,6 +11,7 @@ echo [sync] %SRC% → %DST%
 :: paper-reader
 xcopy /Y /Q "%SRC%\paper-reader\run_reader.py"   "%DST%\paper-reader\"
 xcopy /Y /Q "%SRC%\paper-reader\pdf_fetcher.py"  "%DST%\paper-reader\"
+xcopy /Y /Q "%SRC%\paper-reader\publisher_rules.py" "%DST%\paper-reader\"
 xcopy /Y /Q "%SRC%\paper-reader\paper_daemon.py" "%DST%\paper-reader\"
 xcopy /Y /Q "%SRC%\paper-reader\SKILL.md"        "%DST%\paper-reader\"
 xcopy /Y /E /Q "%SRC%\paper-reader\assets\"      "%DST%\paper-reader\assets\"

@@ -2,7 +2,7 @@
 
 面向生物医学方向的 Codex CLI skill 流水线。每天一句话「今日论文推荐」，自动从 PubMed + bioRxiv 抓取 → 打分 → 分级 → 生成评论 → 为"必读"生成结构化笔记，全部落到本地 Obsidian vault。
 
-Fork 自 [dailypaper-skills](https://github.com/huangkiki/dailypaper-skills)（原版基于 arXiv + HuggingFace Daily），Apache-2.0。本版改为 PubMed + bioRxiv 数据源，增加中科院分区过滤、本地 PDF profile、patchright/Elsevier/bioRxiv PDF 抓取、license 校验等模块。
+Fork 自 [dailypaper-skills](https://github.com/huangkiki/dailypaper-skills)（原版基于 arXiv + HuggingFace Daily），Apache-2.0。本版改为 PubMed + bioRxiv 数据源，增加中科院分区过滤、本地 PDF profile、patchright/Elsevier/bioRxiv PDF 抓取等模块。
 
 ---
 
@@ -19,7 +19,7 @@ Linux  : ~/.codex/skills/
 
 ### 2. 安装 Python 依赖
 
-一条命令装全（paper-reader + daily-papers + license 校验所有依赖都在这里）：
+一条命令装全（paper-reader + daily-papers 依赖都在这里）：
 
 ```bash
 pip install -r daily-papers/requirements.txt
@@ -64,40 +64,13 @@ patchright install chromium
     "api_key": "",
     "base_url": "",
     "model": "gpt-4o-mini"
-  },
-  "license_token": ""
+  }
 }
 ```
 
 - `ncbi_api_key`：可选。有 key：10 req/s；无 key：3 req/s。在 <https://www.ncbi.nlm.nih.gov/account/> 免费申请。
 - `elsevier_api_key`：可选。用于 `10.1016/*` DOI 走官方全文 API。
 - `llm`：可选回退。默认优先用 Codex CLI；Codex 不可用时才尝试 OpenAI 兼容 API；都不可用则会 `RuntimeError`。
-- `license_token`：**必填**。见下一节。
-
-### 5. 填写 `license_token`
-
-本项目做了 Ed25519 签名校验，**`license_token` 为空会直接报错 `[E01]`**，无法运行。
-
-Token 由分发者（给你这个包的人）提前签发，你只需把收到的一串 base64 粘贴进去：
-
-```json
-// _shared/user-config.local.json
-{
-  "license_token": "eyJl..."
-}
-```
-
-如果 token 过期（报 E05），联系分发者续期。
-
-License 错误码对照：
-
-| 码 | 含义 |
-|---|---|
-| E01 | `license_token` 未填 |
-| E02 | token base64 / JSON 解码失败 |
-| E03 | 签名无效（公私钥不配对或 token 被改） |
-| E05 | token 已过期 |
-| E06 | token 里 `e` 字段日期格式非法 |
 
 ---
 
@@ -248,8 +221,6 @@ python ..\paper-reader\run_reader.py "D:\papers\mypaper.pdf" --mode standard --l
 
 ## 六、常见问题
 
-**Q：朋友第一次跑就报 `[E01]`？**
-A：`user-config.local.json` 里 `license_token` 没填。用 `tools/issue_license.py` 给他签一个。
 
 **Q：PubMed 抓回一堆 IDs 但最后只剩几条？**
 A：大概率是 CAS 分区过滤。把 `min_quartile` 从 1 调到 2 或 3 放宽，再看 `{TEMP}/daily_papers_filter_audit.json` 里 `rejected_quartile` 详情。
@@ -287,7 +258,6 @@ Windows: %USERPROFILE%\.codex\skills\
 
 把 `_shared/user-config.local.json.example` 复制一份，改名为 `user-config.local.json`，填入：
 
-- `license_token`：分发者单独发给你的那串 token（**必填**）
 - `ncbi_api_key`：可选，在 <https://www.ncbi.nlm.nih.gov/account/> 免费申请
 - `elsevier_api_key`：可选，读 Elsevier 全文时用
 
@@ -309,7 +279,7 @@ pip install -r daily-papers/requirements.txt
 patchright install chromium
 ```
 
-`requirements.txt` 已包含全部依赖（cryptography、pypdf、PyMuPDF、beautifulsoup4、trafilatura、readability-lxml、patchright、openpyxl、openai、nltk）。
+`requirements.txt` 已包含全部依赖（pypdf、PyMuPDF、beautifulsoup4、trafilatura、readability-lxml、patchright、openpyxl、openai、nltk）。
 
 ### 5. 调整关键词（重要）
 

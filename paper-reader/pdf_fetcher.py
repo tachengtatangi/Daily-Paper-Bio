@@ -39,6 +39,18 @@ import time
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
+from publisher_rules import (
+    DOI_PREFIX_SLUG,
+    PDF_DOMAINS,
+    PUBLISHER_DOMAIN_MAP,
+    auto_known_domains,
+    doi_from_url_or_text,
+    expand_publisher_image_sources,
+    publisher_slug_from_url,
+    springer_pdfdirect_url,
+    wiley_pdfdirect_url,
+)
+
 # ── optional heavy deps ───────────────────────────────────────────────────────
 try:
     import fitz  # PyMuPDF
@@ -214,98 +226,21 @@ async def _wait_for_cdp(port: int, max_wait: int = 25) -> bool:
 
 
 # ── publisher domain map (for article-page detection) ─────────────────────────
-_PUBLISHER_DOMAIN_MAP: dict[str, list[str]] = {
-    "pnas.org":              ["pnas.org"],
-    "science.org":           ["science.org", "sciencemag.org"],
-    "sciencemag.org":        ["science.org", "sciencemag.org"],
-    "cell.com":              ["cell.com", "sciencedirect.com"],
-    "sciencedirect.com":     ["cell.com", "sciencedirect.com"],
-    "nature.com":            ["nature.com"],
-    "academic.oup.com":      ["academic.oup.com", "oup.com"],
-    "springer.com":          ["springer.com"],
-    "wiley.com":             ["wiley.com", "onlinelibrary.wiley.com"],
-    "onlinelibrary.wiley":   ["wiley.com", "onlinelibrary.wiley.com"],
-    "biorxiv.org":           ["biorxiv.org"],
-    "medrxiv.org":           ["medrxiv.org"],
-    "elifesciences.org":     ["elifesciences.org"],
-    "frontiersin.org":       ["frontiersin.org"],
-    "mdpi.com":              ["mdpi.com"],
-    "plos.org":              ["plos.org"],
-    "bmj.com":               ["bmj.com"],
-    "thelancet.com":         ["thelancet.com"],
-}
+_PUBLISHER_DOMAIN_MAP = PUBLISHER_DOMAIN_MAP
+_DOI_PREFIX_SLUG = DOI_PREFIX_SLUG
 
 _CF_MARKERS = [
     "just a moment", "checking your browser", "请稍候",
     "enable javascript", "ray id", "verify you are human",
 ]
 
-# Map common DOI publisher prefixes to a stable slug so that the persistent
-# browser profile is always named after the *actual publisher*, not "doi_org".
-# This lets Cloudflare clearance cookies accumulate across invocations.
-_DOI_PREFIX_SLUG: dict[str, str] = {
-    "10.1126": "science_org",
-    "10.1038": "nature_com",
-    "10.1002": "wiley_com",
-    "10.1093": "oup_com",
-    "10.1016": "sciencedirect_com",
-    "10.1371": "plos_org",
-    "10.1073": "pnas_org",
-    "10.7554": "elifesciences_org",
-    "10.1101": "biorxiv_org",
-    "10.3389": "frontiersin_org",
-    "10.1136": "bmj_com",
-    "10.1056": "nejm_org",
-    "10.1016": "sciencedirect_com",
-    "10.1007": "springer_com",
-    "10.1017": "cambridge_org",
-    "10.1098": "royalsociety_org",
-    "10.1534": "genetics_org",
-    "10.1534": "g3_genes_org",
-    "10.7717": "peerj_com",
-    "10.3354": "int_res_com",
-    "10.1111": "wiley_com",
-    "10.1242": "biologists_com",
-    "10.1083": "rupress_org",
-    "10.1084": "rupress_org",
-    "10.1085": "rupress_org",
-}
-
 
 def _publisher_slug_from_url(url: str) -> str:
-    """Return a stable publisher slug for the persistent site profile.
-
-    For doi.org URLs, look up the DOI prefix in _DOI_PREFIX_SLUG.
-    For direct publisher URLs, use the netloc.  Falls back to "generic".
-    """
-    from urllib.parse import urlparse as _urlparse
-    try:
-        parsed = _urlparse(url)
-        netloc = parsed.netloc.lower().lstrip("www.")
-        if "doi.org" in netloc:
-            # Extract DOI prefix (e.g. "10.1126" from "/10.1126/science.abc1234")
-            path = parsed.path.lstrip("/")
-            prefix = ".".join(path.split("/")[0].split(".")[:2])
-            if prefix in _DOI_PREFIX_SLUG:
-                return _DOI_PREFIX_SLUG[prefix]
-            # Unknown DOI prefix — fall through to netloc-based slug
-            return "doi_org"
-        slug = re.sub(r"[^a-z0-9]", "_", netloc.split(":")[0])[:40]
-        return slug or "generic"
-    except Exception:
-        return "generic"
+    return publisher_slug_from_url(url)
 
 
 def _auto_known_domains(url: str) -> list[str]:
-    netloc = urlparse(url).netloc.lower()
-    if netloc.startswith("www."):
-        netloc = netloc[4:]
-    for key, domains in _PUBLISHER_DOMAIN_MAP.items():
-        if key in netloc:
-            return domains
-    if netloc and "doi.org" not in netloc:
-        return [netloc]
-    return []
+    return auto_known_domains(url)
 
 
 def _is_cf(title: str) -> bool:
@@ -362,33 +297,7 @@ def _pick_src_from_attrs(attrs: dict, base_url: str) -> str:
 
 
 def _expand_wiley_cms_sources(src: str) -> list[str]:
-    src = (src or "").strip()
-    if not src:
-        return []
-    sources: list[str] = []
-
-    def add(value: str) -> None:
-        value = (value or "").strip()
-        if value and value not in sources:
-            sources.append(value)
-
-    parsed = urlparse(src)
-    path = parsed.path or ""
-    if "onlinelibrary.wiley.com" in parsed.netloc.lower() and "/cms/asset/" in path.lower():
-        match = re.search(r"(.+-fig-\d{4})-[a-z](\.(?:jpe?g|png|gif|webp))$", path, re.I)
-        if match:
-            base_path = match.group(1)
-            for ext in (".jpg", ".png", ".gif", ".webp"):
-                add(parsed._replace(path=base_path + ext, query="", fragment="").geturl())
-    if "silverchair-cdn.com" in parsed.netloc.lower():
-        # OUP/Silverchair article pages often expose signed thumbnail URLs such
-        # as /m_msag127f1.jpeg.  The full-resolution asset is the same signed URL
-        # without the m_ prefix.
-        upgraded_path = re.sub(r"/m_([^/]+\.(?:jpe?g|png|webp|gif))$", r"/\1", path, flags=re.I)
-        if upgraded_path != path:
-            add(parsed._replace(path=upgraded_path).geturl())
-    add(src)
-    return sources
+    return expand_publisher_image_sources(src)
 
 
 def _figure_source_candidates(item: dict) -> list[str]:
@@ -931,26 +840,15 @@ async def _try_download_html_fig1(
 
 
 def _doi_from_url_or_text(value: str) -> str:
-    m = re.search(r"(10\.\d{4,9}/[^\s?#\"'<>]+)", value or "", re.IGNORECASE)
-    return m.group(1).rstrip(".,;)") if m else ""
+    return doi_from_url_or_text(value)
 
 
 def _wiley_pdfdirect_url(article_url: str) -> str:
-    if "onlinelibrary.wiley.com" not in (article_url or "").lower():
-        return ""
-    doi = _doi_from_url_or_text(article_url)
-    if not doi.startswith(("10.1111/", "10.1002/")):
-        return ""
-    return f"https://onlinelibrary.wiley.com/doi/pdfdirect/{quote(doi, safe='/')}?download=true"
+    return wiley_pdfdirect_url(article_url)
 
 
 def _springer_pdfdirect_url(article_url: str) -> str:
-    doi = _doi_from_url_or_text(article_url)
-    if doi.startswith("10.1186/"):
-        return f"https://link.springer.com/content/pdf/{quote(doi, safe='/')}_reference.pdf"
-    if doi.startswith("10.1007/"):
-        return f"https://link.springer.com/content/pdf/{quote(doi, safe='/')}.pdf"
-    return ""
+    return springer_pdfdirect_url(article_url)
 
 
 async def _try_fetch_wiley_html_fig1_via_context(
@@ -1000,12 +898,7 @@ async def _try_fetch_wiley_html_fig1_via_context(
 
 
 # ── PDF-link discovery ────────────────────────────────────────────────────────
-_PDF_DOMAINS = [
-    "nature.com", "pnas.org", "science.org", "sciencedirect.com",
-    "cell.com", "oup.com", "springer.com", "wiley.com", "silverchair",
-    "biorxiv.org", "elife", "frontiersin.org", "mdpi.com",
-    "plos.org", "bmj.com", "nejm.org", "thelancet.com",
-]
+_PDF_DOMAINS = PDF_DOMAINS
 
 
 def _is_suppl(href: str) -> bool:

@@ -2,7 +2,7 @@
 
 面向生物医学方向的 Codex CLI skill 流水线。每天一句话「今日论文推荐」，自动从 PubMed + bioRxiv 抓取 → 打分 → 分级 → 生成评论 → 为"必读"生成结构化笔记，全部落到本地 Obsidian vault。
 
-Fork 自 [dailypaper-skills](https://github.com/huangkiki/dailypaper-skills)（原版基于 arXiv + HuggingFace Daily），Apache-2.0。本版改为 PubMed + bioRxiv 数据源，增加中科院分区过滤、本地 PDF profile、patchright/Elsevier/bioRxiv PDF 抓取、license 校验等模块。
+Fork 自 [dailypaper-skills](https://github.com/huangkiki/dailypaper-skills)（原版基于 arXiv + HuggingFace Daily），Apache-2.0。本版改为 PubMed + bioRxiv 数据源，增加中科院分区过滤、本地 PDF profile、patchright/Elsevier/bioRxiv PDF 抓取等模块。
 
 ---
 
@@ -21,7 +21,6 @@ Linux  : ~/.codex/skills/
 
 ```bash
 pip install -r daily-papers/requirements.txt
-pip install cryptography>=41.0.0 openpyxl
 ```
 
 `paper-reader` 需要 patchright（抓带 Cloudflare 的出版商页面），可选：
@@ -60,53 +59,13 @@ patchright install chromium
     "api_key": "",
     "base_url": "",
     "model": "gpt-4o-mini"
-  },
-  "license_token": ""
+  }
 }
 ```
 
 - `ncbi_api_key`：可选。有 key：10 req/s；无 key：3 req/s。在 <https://www.ncbi.nlm.nih.gov/account/> 免费申请。
 - `elsevier_api_key`：可选。用于 `10.1016/*` DOI 走官方全文 API。
 - `llm`：可选回退。默认优先用 Codex CLI；Codex 不可用时才尝试 OpenAI 兼容 API；都不可用则会 `RuntimeError`。
-- `license_token`：**必填**。见下一节。
-
-### 5. 生成 `license_token`
-
-本项目在 `_shared/user_config.py` 里做了 Ed25519 license 校验。**任何脚本 import 配置都会触发校验**，token 为空会抛 `配置初始化失败 [E01]`。
-
-工具脚本在 `tools/issue_license.py`。**首次使用前需生成密钥对**（只做一次，妥善保管 `private_key.secret`）：
-
-```bash
-cd tools/
-# 生成密钥对，并自动把公钥写进 _shared/user_config.py
-python issue_license.py --gen-key --update-source
-```
-
-给自己签一个永久 token：
-
-```bash
-python issue_license.py --user me --key-file private_key.secret
-```
-
-分发给朋友（推荐有效期 90 天，到期再续）：
-
-```bash
-python issue_license.py --user friend1 --days 90 --key-file private_key.secret
-```
-
-命令输出一串 base64 token，粘贴进对方的 `_shared/user-config.local.json` 的 `license_token` 字段。
-
-> **注意**：`private_key.secret` 是签发密钥，**绝不能放进分发包**。它只存在于你的本机 `tools/` 目录里。
-
-License 错误码对照：
-
-| 码 | 含义 |
-|---|---|
-| E01 | `license_token` 未填 |
-| E02 | token base64 / JSON 解码失败 |
-| E03 | 签名无效（公私钥不配对或 token 被改） |
-| E05 | token 已过期 |
-| E06 | token 里 `e` 字段日期格式非法 |
 
 ---
 
@@ -257,8 +216,6 @@ python ..\paper-reader\run_reader.py "D:\papers\mypaper.pdf" --mode standard --l
 
 ## 六、常见问题
 
-**Q：朋友第一次跑就报 `[E01]`？**
-A：`user-config.local.json` 里 `license_token` 没填。用 `tools/issue_license.py` 给他签一个。
 
 **Q：PubMed 抓回一堆 IDs 但最后只剩几条？**
 A：大概率是 CAS 分区过滤。把 `min_quartile` 从 1 调到 2 或 3 放宽，再看 `{TEMP}/daily_papers_filter_audit.json` 里 `rejected_quartile` 详情。
@@ -305,8 +262,6 @@ skills/
 ├── generate-mocs/
 ├── playwright/
 ├── codex-primary-runtime/
-├── tools/
-│   └── issue_license.py        ← 签发工具（无私钥）
 └── README.md
 ```
 
@@ -314,8 +269,7 @@ skills/
 
 | 文件 | 原因 |
 |---|---|
-| `_shared/user-config.local.json` | 含你的 API key + token，**绝对不能分发** |
-| `tools/private_key.secret` | 签发私钥，只在你本机保留 |
+| `_shared/user-config.local.json` | 含你的 API key，**绝对不能分发** |
 | `_shared/__pycache__/` | 编译缓存，不需要 |
 | `paper-reader/assets/` | 可选，含 zotero_helper 等实验性脚本 |
 
@@ -336,28 +290,13 @@ skills/
     "api_key": "",
     "base_url": "",
     "model": "gpt-4o-mini"
-  },
-  "license_token": "由分发者签发，填入此处"
+  }
 }
 ```
 
 ### 操作步骤
 
-```bash
-# 1. 给朋友签一个 90 天 token
-cd tools/
-python issue_license.py --user friend1 --days 90 --key-file private_key.secret
-
-# 2. 打包（PowerShell）
-$src = "$env:USERPROFILE\.codex\skills"
-$dst = "D:\share\dailypaper-skills.zip"
-$exclude = @("user-config.local.json", "private_key.secret", "__pycache__")
-# 用 7-Zip 或资源管理器右键压缩后，手动删除上述文件
-
-# 3. 把 zip + token 发给朋友
-#    朋友解压到 %USERPROFILE%\.codex\skills\
-#    然后按 README 第一章操作
-```
+压缩分发前，确认已经排除 `_shared/user-config.local.json`、`__pycache__/` 和本地运行缓存。接收者解压到 `%USERPROFILE%\.codex\skills\` 后按 README 第一章配置路径与可选 API key。
 
 ### 接收者需要自己准备
 

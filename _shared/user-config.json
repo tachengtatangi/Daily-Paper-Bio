@@ -5,8 +5,6 @@
     "base_url": "",
     "model": "gpt-4o-mini"
   },
-  "_license_token_comment": "运行时授权 token。将真实 token 放入同目录的 user-config.local.json（已被 .gitignore 排除），此处留空即可。",
-  "license_token": "",
   "_paths_comment": "首次安装务必修改 obsidian_vault 为你自己的 Obsidian 仓库绝对路径；其余子文件夹会在仓库下自动创建。temp_folder 留空时用系统临时目录。",
   "paths": {
     "obsidian_vault": "E:\\Obsidian\\Library\\Paper",

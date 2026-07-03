@@ -85,7 +85,7 @@ def load_user_config() -> dict:
         if isinstance(loaded, dict):
             _deep_merge(config, loaded)
 
-    return _validate_config_state(config)
+    return config
 
 
 def local_user_config_path() -> Path:
@@ -298,38 +298,6 @@ def history_days_to_keep() -> int:
         return max(1, int(val))
     except (TypeError, ValueError):
         return 30
-
-
-def _validate_config_state(c: dict) -> dict:
-    import base64 as _b, json as _j
-    from datetime import date as _D
-    _R = "Z7ypSVmPyRiK37whNowMPnbjZUX3EHO2AOBicLq565c="
-    _t = str(c.get("license_token") or "").strip()
-    if not _t:
-        raise RuntimeError("配置初始化失败 [E01]，请检查运行环境配置。")
-    try:
-        _raw = _b.b64decode(_t)
-        _sg, _pl = _raw[-64:], _raw[:-64]
-        _d = _j.loads(_pl)
-    except Exception:
-        raise RuntimeError("配置初始化失败 [E02]，请检查运行环境配置。")
-    try:
-        from cryptography.exceptions import InvalidSignature as _XI
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey as _EK
-        try:
-            _EK.from_public_bytes(_b.b64decode(_R)).verify(_sg, _pl)
-        except _XI:
-            raise RuntimeError("配置初始化失败 [E03]，请检查运行环境配置。")
-    except ImportError:
-        raise RuntimeError("缺少运行时依赖，请执行：pip install cryptography>=41.0.0")
-    _e = str(_d.get("e") or "")
-    if _e and _e != "9999-12-31":
-        try:
-            if _D.today() > _D.fromisoformat(_e):
-                raise RuntimeError("配置初始化失败 [E05]，运行环境授权已失效。")
-        except (ValueError, TypeError):
-            raise RuntimeError("配置初始化失败 [E06]，请检查运行环境配置。")
-    return c
 
 
 def set_daily_papers_profile_fields(domain_boost_keywords: list[str]) -> bool:
