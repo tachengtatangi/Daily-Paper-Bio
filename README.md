@@ -2,97 +2,151 @@
 
 # Daily Paper Bio
 
-Daily Paper Bio is a Codex skill suite for life-science paper triage and Obsidian note taking. It fetches PubMed and bioRxiv papers, scores them against your research interests, writes a reviewer-style recommendation draft, and generates structured notes for must-read papers.
+Daily Paper Bio is a Codex skill workflow for people who want to keep up with life-science papers without manually checking PubMed, bioRxiv, publisher pages, and local PDFs every day.
 
-This repository is a set of Codex skills, not a Python package. Install it by copying the skill directories into your Codex skills folder.
+In day-to-day use, you mostly say one sentence to Codex:
+
+```text
+今日论文推荐
+过去3天论文推荐
+读一下这篇论文 https://pubmed.ncbi.nlm.nih.gov/41803465/
+```
+
+It will fetch new papers, score them against your research interests, write an Obsidian recommendation page, and generate full notes for the papers marked as must-read.
+
+This project is adapted from [huangkiki/dailypaper-skills](https://github.com/huangkiki/dailypaper-skills). The original workflow focuses on arXiv/HuggingFace-style paper streams; this version is rebuilt around PubMed, bioRxiv, publisher pages, CAS journal quartiles, PDF extraction, and Obsidian notes for biology and biomedical research.
 
 ## What It Does
 
 - Fetches recent papers from PubMed and bioRxiv.
-- Scores papers with configurable keywords, negative keywords, journal filters, and optional CAS journal quartiles.
-- Builds daily recommendation drafts with `must-read`, `worth reading`, and `skip` buckets.
-- Lets the Codex agent write the final reviewer-style comments before publishing to Obsidian.
-- Generates full notes only for must-read papers through `paper-reader`.
-- Reads PubMed URLs, DOI links, publisher pages, local PDFs, and bioRxiv PDFs.
-- Uses MinerU for PDF text extraction when available, with fallback to local PDF parsers.
-- Keeps API keys and local machine paths in an ignored local config file.
+- Scores papers with your `keywords`, `domain_boost_keywords`, `negative_keywords`, journal filters, and optional CAS quartile filtering.
+- Generates a daily recommendation page with `must-read`, `worth reading`, and `skip` buckets.
+- Uses the Codex agent to write reviewer-style comments instead of publishing raw templates.
+- Generates full structured notes only for must-read papers.
+- Reads PubMed URLs, DOI links, publisher article pages, local PDFs, and bioRxiv PDFs.
+- Maintains Obsidian paper-note indexes and concept MOCs.
 
-## Repository Layout
+The output in Obsidian is roughly:
 
-| Path | Purpose |
-|---|---|
-| `_shared/` | Shared config loader, Obsidian paths, MOC builders, optional data files. |
-| `daily-papers/` | Fetching, scoring, enrichment, draft generation, history, cleanup. |
-| `daily-papers-fetch/` | Codex skill wrapper for the fetch stage. |
-| `daily-papers-review/` | Codex skill wrapper for the review/finalization stage. |
-| `daily-papers-notes/` | Codex skill wrapper for must-read note generation. |
-| `paper-reader/` | Single-paper reading and note generation. |
-| `generate-mocs/` | Obsidian MOC regeneration skill. |
-| `playwright/` | Browser-control helper skill and references. |
+```text
+ObsidianVault/
+├── DailyPapers/
+│   └── YYYY-MM-DD-论文推荐.md
+├── PaperNotes/
+│   ├── _inbox/
+│   │   └── PMID - Paper title.md
+│   ├── _concepts/
+│   └── PaperNotes.md
+└── AllPdfFig/
+```
+
+## Everyday Usage
+
+Daily recommendations:
+
+```text
+今日论文推荐
+过去3天论文推荐
+过去一周论文推荐
+2026-06-13 到 2026-06-16 论文推荐
+今日论文推荐，关键词 convergent evolution taste receptor
+```
+
+Single-paper reading:
+
+```text
+读一下这篇论文 https://pubmed.ncbi.nlm.nih.gov/41803465/
+快速看一下这篇论文 10.1101/2024.01.01.123456
+批判性分析这篇论文 D:\papers\paper.pdf
+```
+
+Refresh Obsidian indexes manually:
+
+```text
+更新索引
+```
 
 ## Requirements
 
-- Python 3.10 or newer.
+Required:
+
 - Codex with local skill support.
+- Python 3.10 or newer.
 - An Obsidian vault.
-- Optional: `patchright` Chromium for publisher pages that require a browser session.
-- Optional: MinerU on `PATH` for better PDF text extraction.
-- Optional: NCBI and Elsevier API keys.
 
-Install Python dependencies from the repository root:
+Strongly recommended:
 
-```powershell
-python -m pip install -r daily-papers/requirements.txt
-```
+- **MinerU** for PDF text extraction. The workflow still works without it, but MinerU usually produces cleaner full-text Markdown from PDFs than generic PDF parsers. That directly improves paper notes and summaries, especially for multi-column biology papers.
 
-Install the optional browser runtime:
+Optional but useful:
 
-```powershell
-patchright install chromium
-```
+- `patchright` Chromium for publisher pages that need a browser session.
+- NCBI API key for faster PubMed requests.
+- Elsevier API key for ScienceDirect / Cell Press full-text retrieval when available.
 
-MinerU is optional. If `mineru.exe` or `mineru` is found on `PATH`, `paper-reader` tries it first for PDF text extraction. The effective command is:
+## Install
 
-```powershell
-mineru -p "<pdf_path>" -o "<output_root>" --method auto --backend pipeline
-```
+The install method follows the original skill repository style: clone the repo, then copy the skill directories into your local Codex skills directory. No installer script is required.
 
-Non-Markdown MinerU artifacts are cleaned after a successful note write; the generated Markdown can be kept for inspection.
+Clone the repository:
 
-## Installation
-
-Clone the repository anywhere outside the Codex runtime folder:
-
-```powershell
+```bash
 git clone https://github.com/tachengtatangi/Daily-Paper-Bio.git
 cd Daily-Paper-Bio
 ```
 
-Then copy the skill folders into Codex:
+Install Python dependencies:
+
+```bash
+python -m pip install -r daily-papers/requirements.txt
+```
+
+Install MinerU and make sure the `mineru` command works in your terminal. Follow the official MinerU installation instructions for your platform. This project does not vendor MinerU; it only calls the local CLI when available.
+
+The command used internally is essentially:
+
+```bash
+mineru -p "<pdf_path>" -o "<output_root>" --method auto --backend pipeline
+```
+
+Install the optional browser runtime:
+
+```bash
+patchright install chromium
+```
+
+Copy the skill directories into Codex.
+
+macOS / Linux / Git Bash:
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R _shared daily-papers daily-papers-fetch daily-papers-review daily-papers-notes paper-reader generate-mocs playwright ~/.codex/skills/
+```
+
+Windows PowerShell:
 
 ```powershell
-.\sync_to_codex.bat
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills"
+Copy-Item -Recurse -Force _shared,daily-papers,daily-papers-fetch,daily-papers-review,daily-papers-notes,paper-reader,generate-mocs,playwright "$env:USERPROFILE\.codex\skills\"
 ```
 
-The sync script preserves existing `_shared/user-config.json` and `_shared/user-config.local.json` in your Codex runtime, so updating the skills will not overwrite your local paths or API keys.
-
-Manual Windows target:
+If you are updating an existing installation, back up your runtime config first or re-apply your local settings afterwards:
 
 ```text
-%USERPROFILE%\.codex\skills\
+~/.codex/skills/_shared/user-config.json
+~/.codex/skills/_shared/user-config.local.json
 ```
 
-Manual Unix-like target:
+## Configure
+
+Edit the runtime config after installing the skills:
 
 ```text
-~/.codex/skills/
+~/.codex/skills/_shared/user-config.json
 ```
 
-Copy these directories directly under `skills/`: `_shared`, `daily-papers`, `daily-papers-fetch`, `daily-papers-review`, `daily-papers-notes`, `paper-reader`, `generate-mocs`, and `playwright`.
-
-## Configuration
-
-Edit `_shared/user-config.json` after installing the skills. At minimum, set your Obsidian vault path and research keywords:
+Minimum configuration:
 
 ```json
 {
@@ -107,13 +161,19 @@ Edit `_shared/user-config.json` after installing the skills. At minimum, set you
 }
 ```
 
-Put secrets in `_shared/user-config.local.json`, not in `user-config.json`:
+Put private keys in the local override file, not in the public config:
 
-```powershell
-copy _shared\user-config.local.json.example _shared\user-config.local.json
+```bash
+cp ~/.codex/skills/_shared/user-config.local.json.example ~/.codex/skills/_shared/user-config.local.json
 ```
 
-Then fill only the keys you need:
+On Windows PowerShell:
+
+```powershell
+Copy-Item "$env:USERPROFILE\.codex\skills\_shared\user-config.local.json.example" "$env:USERPROFILE\.codex\skills\_shared\user-config.local.json"
+```
+
+Then edit:
 
 ```json
 {
@@ -129,86 +189,89 @@ Then fill only the keys you need:
 }
 ```
 
-`user-config.local.json` is ignored by git. Do not commit real API keys, browser cookies, or local private paths.
+`user-config.local.json` is ignored by git. Do not commit API keys, cookies, or private paths.
 
 ## CAS Quartile Data
 
-This repository includes a redistributable CAS journal quartile workbook used by the optional PubMed journal filter:
+This repository includes a redistributable CAS journal quartile workbook:
 
 ```text
 _shared/data/cas_quartiles_2025.xlsx
 ```
 
-If you remove or replace the workbook, the code still runs. When the file is missing, CAS lookup returns no match and quartile filtering should be loosened by setting `daily_papers.min_quartile` to `4` during debugging.
+It is used by the optional PubMed journal filter. bioRxiv papers are not filtered by CAS quartile. For first-time debugging, set:
 
-## Usage in Codex
+```json
+{
+  "daily_papers": {
+    "min_quartile": 4,
+    "min_score": 1
+  }
+}
+```
 
-Ask Codex in natural language:
+After you confirm the workflow returns papers, tighten the thresholds to match your reading capacity.
+
+## How It Works
+
+`今日论文推荐` is split into three skills:
+
+1. `daily-papers-fetch`: fetch PubMed + bioRxiv, score papers, deduplicate, enrich metadata, and write temporary JSON.
+2. `daily-papers-review`: build a structured draft, then let the Codex agent write real comments before publishing the final Obsidian Markdown.
+3. `daily-papers-notes`: generate full notes only for must-read papers, backfill note links, and refresh MOCs.
+
+A safe smoke test that does not publish a final recommendation page:
+
+```bash
+python daily-papers/run_pipeline.py --date 2026-07-03 --days 3 --notes-limit 0
+```
+
+This writes a draft under the configured temp folder. A draft is not a final recommendation page; any `TODO_AGENT` field must be replaced by the review stage before publishing.
+
+## Repository Layout
 
 ```text
-今日论文推荐
-过去3天论文推荐
-过去一周论文推荐
-2026-06-13 到 2026-06-16 论文推荐
-今日论文推荐，关键词 convergent evolution taste receptor
+Daily-Paper-Bio/
+├── _shared/                 # shared config, CAS lookup, MOC builders
+├── daily-papers/            # fetch, score, enrich, draft, history
+├── daily-papers-fetch/      # fetch skill wrapper
+├── daily-papers-review/     # review skill wrapper
+├── daily-papers-notes/      # notes skill wrapper
+├── paper-reader/            # single-paper reader and note generator
+├── generate-mocs/           # Obsidian index generation
+├── playwright/              # browser helper skill
+├── README.md
+└── README.zh-CN.md
 ```
 
-The high-level skill runs three stages:
+## FAQ
 
-1. `daily-papers-fetch`: fetch, score, deduplicate, enrich, and write temporary JSON.
-2. `daily-papers-review`: build a structured draft, let the agent write comments, publish the final Markdown, and update history.
-3. `daily-papers-notes`: generate notes only for must-read papers, backfill links, and refresh MOCs.
+**Do I have to use Obsidian?**
 
-For a safe smoke test that does not publish the final Obsidian recommendation page:
+The output is Markdown, so you can read it anywhere. Obsidian is recommended because the workflow uses wiki links, indexes, and concept pages.
 
-```powershell
-python daily-papers\run_pipeline.py --date 2026-07-03 --days 3 --notes-limit 0
-```
+**Do I have to use MinerU?**
 
-This writes a draft under your configured temp folder. Final publishing is intentionally left to the review skill so the agent must replace all `TODO_AGENT` placeholders with real comments.
+No, but it is strongly recommended. Without MinerU, the reader falls back to local PDF parsers. That is enough for many PDFs, but the text is usually less structured, especially for multi-column papers.
 
-## Single-Paper Reading
+**Why did I get zero recommendations?**
 
-Examples:
+First set `min_quartile` to `4` and `min_score` to `1`, then inspect `daily_papers_filter_audit.json`. Most zero-result cases are caused by overly narrow keywords, strict quartile filtering, or negative keywords catching too much.
 
-```text
-读一下这篇论文 https://pubmed.ncbi.nlm.nih.gov/41803465/
-快速看一下这篇论文 10.1101/2024.01.01.123456
-批判性分析这篇论文 https://example.com/article.pdf
-```
+**Does it automatically commit my Obsidian vault?**
 
-For a local PDF without network metadata enrichment:
+No. `automation.git_commit` and `automation.git_push` are false by default.
 
-```powershell
-python paper-reader\run_reader.py "D:\papers\paper.pdf" --mode standard --local-only
-```
+**Can this replace reading the paper?**
 
-## GitHub Setup Notes
+No. Treat it as triage, reading notes, and a starting point for related-work organization. AI-generated comments and notes can be wrong; verify important claims against the original paper.
 
-When creating a new GitHub repository for an existing local repo, leave GitHub's `Add README`, `.gitignore`, and `License` options off. This repository already contains those files locally; letting GitHub create them would make a separate first commit and force you to merge unrelated histories.
+## Disclaimer
 
-After creating an empty GitHub repo, push from this local repository:
-
-```powershell
-cd /d path\to\Daily-Paper-Bio
-git remote rename origin local-origin
-git remote add origin https://github.com/tachengtatangi/Daily-Paper-Bio.git
-git branch -M main
-git push -u origin main
-```
-
-## Troubleshooting
-
-| Symptom | What to check |
-|---|---|
-| No papers returned | Loosen `min_score`, set `min_quartile` to `4`, and inspect `daily_papers_filter_audit.json`. |
-| PubMed is slow or rate-limited | Add `sources.ncbi_api_key` in `user-config.local.json`. |
-| Must-read note only has an abstract | Install browser support, configure Elsevier API if needed, or provide a local PDF. |
-| PDF text is poor | Install MinerU and make sure `mineru` is on `PATH`. |
-| Final recommendation still has `TODO_AGENT` | Stop and rerun the review step; drafts are not publishable final pages. |
+This is a personal research workflow, not a fully managed product. AI-generated recommendations, comments, and notes may contain factual errors, omissions, or misreadings. Use it as an assistant, not as a replacement for your own research judgment.
 
 ## License
 
-The project is licensed under Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).
 
-Some bundled references and browser helper assets retain their own notices, including the files under `playwright/`.
+Some bundled helper assets keep their own notices, including files under `playwright/`.
