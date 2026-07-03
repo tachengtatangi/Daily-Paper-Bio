@@ -25,3 +25,5 @@ desktop.ini
 # Temp / runtime outputs
 *.log
 *.tmp
+.playwright-cli/
+paper_reader_*/

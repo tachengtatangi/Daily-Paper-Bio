@@ -57,3 +57,7 @@ description: |
 - 不要把 `run_pipeline.py` 当作默认入口；它只保留给调试或批处理。
 - 不要要求用户手动拆分三步；这是 skill 内部的组织方式。
 - review 阶段的评论由 Agent 自己写，不依赖 Python 批量生成点评。
+
+## HARD GUARDRAILS: pipeline success
+
+The pipeline must not interpret network failure as "no papers". Continue from fetch to review only when fetch wrote a successful `{TEMP_DIR}\daily_papers_fetch_status.json` for the requested date/window. If fetch fails, stop and report the failure; never use stale `daily_papers_enriched.json` and never publish an empty formal recommendation page.

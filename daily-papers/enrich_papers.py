@@ -39,6 +39,8 @@ if str(_SHARED_DIR) not in sys.path:
 
 from user_config import temp_file_path, sources_config
 
+from pipeline_guard import PipelineGuardError, require_top30_ready
+
 SEMAPHORE_LIMIT  = 8
 CURL_TIMEOUT     = 25   # seconds for curl's own --max-time flag
 ASYNCIO_TIMEOUT  = 35   # asyncio.wait_for timeout (curl + process overhead)
@@ -611,6 +613,7 @@ def _write_output(data: str, output_path: str | None) -> None:
 def main() -> None:
     output_path = None
     input_path  = None
+    auto_input = False
 
     if len(sys.argv) >= 2 and sys.argv[1].endswith(".json"):
         input_path = sys.argv[1]
@@ -622,6 +625,7 @@ def main() -> None:
         auto = temp_file_path("daily_papers_top30.json")
         if auto.exists():
             input_path = str(auto)
+            auto_input = True
             print(f"[enrich_papers] Auto input: {input_path}", file=sys.stderr)
 
     if input_path:
@@ -649,6 +653,19 @@ def main() -> None:
     if not papers:
         _write_output("[]", output_path)
         return
+
+    if auto_input:
+        try:
+            guarded = require_top30_ready(
+                top30_path=temp_file_path("daily_papers_top30.json"),
+                status_path=temp_file_path("daily_papers_fetch_status.json"),
+            )
+        except PipelineGuardError as exc:
+            print(f"[enrich_papers] refusing stale or failed fetch output: {exc}", file=sys.stderr)
+            sys.exit(2)
+        if len(guarded) != len(papers):
+            print("[enrich_papers] refusing input: top30 changed during guard check", file=sys.stderr)
+            sys.exit(2)
 
     print(f"Enriching {len(papers)} papers...", file=sys.stderr)
     enriched = enrich_papers(papers)

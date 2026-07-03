@@ -102,3 +102,15 @@ python ..\daily-papers\enrich_papers.py
 - 不生成推荐 Markdown
 - 不生成论文笔记
 - 不做 git 操作
+
+## HARD GUARDRAILS: fetch success criteria
+
+Fetch is successful only when all of these are true:
+
+- `fetch_and_score.py` exits with code 0.
+- `{TEMP_DIR}\daily_papers_fetch_status.json` exists and has `status == "success"`.
+- The status file `window_end` matches the requested `--date`, and `days` matches the requested window.
+- `{TEMP_DIR}\daily_papers_top30.json` is fresh for the same run and is a JSON array.
+- `{TEMP_DIR}\daily_papers_filter_audit.json` does not report source-wide network failure in `_source_fetch_errors`.
+
+If PubMed/bioRxiv requests fail with WinError, connection refused, timeout, DNS, HTTP, or similar source access errors, treat fetch as failed. Do not run enrich/review/notes, do not use stale temp JSON, and do not generate a formal empty recommendation page.

@@ -10,13 +10,13 @@ completes the commentary pass.
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import importlib.util
 import json
 import subprocess
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -31,6 +31,7 @@ from user_config import (
     ensure_vault_dirs,
     git_commit_enabled,
     git_push_enabled,
+    notes_parallelism,
     obsidian_vault_path,
     paper_notes_dir,
     pdf_picture_root_dir,
@@ -67,7 +68,101 @@ def parse_keywords_override(raw: str) -> list[str]:
     return FETCH.parse_keywords_override(raw)
 
 
+def _write_non_oa_placeholder_note(paper: dict) -> str | None:
+    """Write a minimal placeholder note for non-OA papers that lack PMC full text.
+
+    Instead of running run_reader.py (which would yield an abstract-only note
+    with weak analysis), we write a concise note that honestly states the paper
+    is behind a paywall and links to the correct identifiers.
+    """
+    notes_dir = paper_notes_dir()
+    if not notes_dir:
+        return None
+    inbox = Path(notes_dir) / "_inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    pmid = str(paper.get("id") or paper.get("pmid") or "").strip()
+    title = str(paper.get("title") or "Untitled").strip()
+    doi = str(paper.get("doi") or "").strip()
+    journal = str(paper.get("journal") or paper.get("source") or "").strip()
+    year = str(paper.get("year") or date.today().year)
+    authors_raw = paper.get("authors") or []
+    authors = authors_raw if isinstance(authors_raw, list) else [str(authors_raw)]
+    authors_yaml = json.dumps(authors, ensure_ascii=False)
+    pubmed_url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else ""
+    doi_url = f"https://doi.org/{doi}" if doi else ""
+    safe_title = title[:90].replace("/", " ").replace("\\", " ").replace(":", " ")
+    stem = f"{pmid} - {safe_title}" if pmid else safe_title
+    out_path = inbox / f"{stem}.md"
+
+    today_str = date.today().isoformat()
+    note = f"""---
+title: {json.dumps(title, ensure_ascii=False)}
+authors: {authors_yaml}
+year: {year}
+tags: [paper-note, paper-reader, standard, pubmed, non-oa]
+journal: {json.dumps(journal, ensure_ascii=False)}
+pmid: "{pmid}"
+doi: "{doi}"
+pubmed_url: "{pubmed_url}"
+doi_url: "{doi_url}"
+web_url: ""
+local_pdf: ""
+pdf_path: ""
+downloaded_pdf: ""
+acquisition_path: "PubMed metadata only — non-OA, full text unavailable"
+summary_mode: "仅 PubMed 元数据（非 OA 文章，无全文访问权限）"
+analysis_mode: "standard"
+date: "{today_str}"
+---
+
+# {title}
+
+## Metadata
+
+| Key | Value |
+| --- | --- |
+| Authors | {', '.join(authors)} |
+| Journal | {journal} |
+| Year | {year} |
+| PMID | {pmid} |
+| DOI | {doi} |
+| PubMed | [{pubmed_url}]({pubmed_url}) |
+| DOI page | [{doi_url}]({doi_url}) |
+
+## Sources
+
+- PubMed: [{pubmed_url}]({pubmed_url})
+- DOI: [{doi_url}]({doi_url})
+
+## 访问说明
+
+> 此文章发表于订阅制期刊，暂无 PMC 开放全文。无法自动生成分析笔记。
+>
+> 建议通过机构网络、VPN 或图书馆访问获取全文，然后手动补充以下各分析区块。
+"""
+    try:
+        out_path.write_text(note, encoding="utf-8")
+        return str(out_path)
+    except Exception:
+        return None
+
+
 def run_paper_reader_for_pubmed(paper: dict) -> str | None:
+    # Non-OA shortcut: if the paper has no PMC ID and is not a preprint or
+    # Elsevier paper (both have full-text API access), it is likely behind a
+    # paywall.  Write a minimal placeholder rather than a weak abstract-only note.
+    pmc_id = str(paper.get("pmc_id") or "").strip()
+    doi = str(paper.get("doi") or "").strip()
+    is_preprint = (
+        doi.startswith("10.1101/") or doi.startswith("10.64898/")
+        or "biorxiv" in str(paper.get("url") or "").lower()
+        or "medrxiv" in str(paper.get("url") or "").lower()
+    )
+    is_elsevier = doi.startswith("10.1016/")  # Elsevier API can retrieve full text
+    if not pmc_id and not is_preprint and not is_elsevier:
+        return _write_non_oa_placeholder_note(paper)
+
     source = paper.get("url") or (f"https://doi.org/{paper.get('doi', '')}" if paper.get("doi") else "")
     if not source:
         return None
@@ -119,33 +214,82 @@ def run_paper_reader_for_pubmed(paper: dict) -> str | None:
     return None
 
 
-def generate_notes_parallel(must_reads: list[dict], note_limit: int) -> list[str]:
+def _infer_publisher_key(paper: dict) -> str:
+    """Return a stable key identifying which patchright profile this paper will use.
+
+    patchright profiles are keyed by publisher domain.  Papers with the same
+    key will contend for the same Chromium profile lock and must run sequentially.
+
+    Priority:
+      1. PMC papers (has pmc_id) → fixed key "pmc.ncbi.nlm.nih.gov"
+      2. DOI present → DOI registrant prefix, e.g. "10.1093" (identifies publisher)
+      3. Fallback → URL netloc, or "unknown"
+    """
+    if paper.get("pmc_id"):
+        return "pmc.ncbi.nlm.nih.gov"
+    doi = (paper.get("doi") or "").strip()
+    if doi:
+        return doi.split("/")[0]
+    url = (paper.get("url") or "").strip()
+    if url:
+        try:
+            netloc = urlparse(url).netloc
+            if netloc:
+                return netloc
+        except Exception:
+            pass
+    return "unknown"
+
+
+def generate_notes_publisher_aware(must_reads: list[dict], note_limit: int) -> list[str]:
+    """Generate notes with publisher-aware parallelism.
+
+    Papers from the same publisher share one patchright persistent-context
+    profile directory and must run sequentially (Chromium locks the profile at
+    OS level).  Papers from different publishers use different profiles and can
+    run in parallel safely.
+
+    Strategy:
+      - Group papers by publisher key (_infer_publisher_key).
+      - Within each group: run sequentially (for-loop).
+      - Across groups: run in parallel (ThreadPoolExecutor, max_workers from
+        notes_parallelism config).
+    """
+    import concurrent.futures
+    from collections import defaultdict
+
     if note_limit <= 0:
         return []
-    parallelism = max(1, int(PIPELINE_CONFIG.get("notes_parallelism", 1)))
-    targets = must_reads[:note_limit]
-    note_paths: list[str] = []
-    failed_papers: list[dict] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
-        futures = {executor.submit(run_paper_reader_for_pubmed, paper): paper for paper in targets}
-        for future in concurrent.futures.as_completed(futures):
-            paper = futures[future]
+
+    limited = must_reads[:note_limit]
+
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for paper in limited:
+        groups[_infer_publisher_key(paper)].append(paper)
+
+    def _process_group(papers: list[dict]) -> list[str]:
+        paths: list[str] = []
+        for paper in papers:
             try:
-                note_path = future.result()
+                note_path = run_paper_reader_for_pubmed(paper)
             except Exception:
                 note_path = None
             if note_path:
-                note_paths.append(note_path)
-            else:
-                failed_papers.append(paper)
+                paths.append(note_path)
+        return paths
 
-    for paper in failed_papers:
-        try:
-            note_path = run_paper_reader_for_pubmed(paper)
-        except Exception:
-            note_path = None
-        if note_path:
-            note_paths.append(note_path)
+    if len(groups) == 1:
+        return _process_group(limited)
+
+    max_workers = min(len(groups), max(1, notes_parallelism()))
+    note_paths: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_process_group, g) for g in groups.values()]
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                note_paths.extend(fut.result())
+            except Exception:
+                pass
     return note_paths
 
 
@@ -244,6 +388,12 @@ def main() -> int:
         papers.extend(FETCH.fetch_biorxiv_papers(start_date, target_date, days))
 
     selected = FETCH.merge_and_dedup(papers, target_date, days=days, top_n=FETCH.TOP_N * days)
+    if hasattr(FETCH, "raise_if_fetch_failed_without_candidates"):
+        try:
+            FETCH.raise_if_fetch_failed_without_candidates(selected, stage="run_pipeline")
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     enriched = (
         ENRICH.enrich_papers(selected)
         if hasattr(ENRICH, "enrich_papers")

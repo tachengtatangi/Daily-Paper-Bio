@@ -35,10 +35,10 @@ DEFAULT_CONFIG = {
     },
     "daily_papers": {
         "keywords": [],
+        "keyword_variants": {},
         "negative_keywords": [],
         "rejected_journals": [],
         "domain_boost_keywords": [],
-        "keyword_variants": {},
         "search_retmax": 5000,
         "search_retmax_total_cap": 15000,
         "efetch_workers": 5,
@@ -205,6 +205,10 @@ def git_commit_enabled() -> bool:
 
 def git_push_enabled() -> bool:
     return bool(automation_config()["git_push"])
+
+
+def notes_parallelism() -> int:
+    return int(daily_papers_config().get("notes_parallelism", 3))
 
 
 def set_daily_papers_profile_update_flag(enabled: bool) -> bool:

@@ -10,6 +10,11 @@ _SHARED_DIR = Path(__file__).resolve().parent
 if str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
 
+
+def is_backup_note(rel: Path) -> bool:
+    return any(".bak-" in part or part.endswith(".bak") for part in rel.parts)
+
+
 from user_config import concepts_dir
 
 
@@ -23,6 +28,8 @@ def main() -> int:
         for path in sorted(concepts_root.rglob("*.md")):
             rel = path.relative_to(concepts_root)
             if any(part.startswith(".") for part in rel.parts):
+                continue
+            if is_backup_note(rel):
                 continue
             if rel.name == "_concepts.md":
                 continue

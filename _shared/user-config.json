@@ -14,8 +14,8 @@
     "daily_papers_folder": "DailyPapers",
     "concepts_folder": "_concepts",
     "pdf_figure_folder": "AllPdfFig",
-    "temp_folder": "",
-    "preference_pdf_library_folder": "",
+    "temp_folder": "E:\\Obsidian\\Library\\tmp",
+    "preference_pdf_library_folder": "E:\\桌面\\WHU-Lab\\EndNote\\PhD.Data\\PDF",
     "zotero_db": "",
     "zotero_storage": ""
   },
@@ -52,7 +52,6 @@
       "bitter taste receptor",
       "receptor repertoire",
       "dietary diversification",
-      "adaptive radiation",
       "accelerated region",
       "de novo gene",
       "gene family evolution",
@@ -76,91 +75,8 @@
       "convergent trait",
       "convergent acquisition"
     ],
-    "keyword_variants": {
-      "convergent evolution": [
-        "convergent evolutionary",
-        "evolutionary convergence",
-        "convergent adaptation",
-        "convergent adaptations"
-      ],
-      "convergent acquisition": [
-        "convergent acquisitions",
-        "convergently acquired",
-        "convergent gain",
-        "convergent gains"
-      ],
-      "genomic convergence": [
-        "genome convergence",
-        "genomic convergences",
-        "convergent genomic",
-        "host genomic convergence"
-      ],
-      "molecular convergence": [
-        "molecular convergences",
-        "convergent molecular evolution",
-        "convergent molecular adaptation"
-      ],
-      "de novo gene": [
-        "de novo genes",
-        "de-novo gene",
-        "de-novo genes",
-        "newly evolved gene",
-        "newly evolved genes"
-      ],
-      "gene family evolution": [
-        "gene family expansion",
-        "gene family contraction",
-        "gene family diversification",
-        "gene family turnover"
-      ],
-      "sensory receptor": [
-        "sensory receptors",
-        "chemosensory receptor",
-        "chemosensory receptors"
-      ],
-      "olfactory receptor": [
-        "olfactory receptors",
-        "olfactory repertoire",
-        "olfactory repertoires",
-        "olfactory receptor repertoire",
-        "olfactory receptor repertoires"
-      ],
-      "taste receptor": [
-        "taste receptors",
-        "gustatory receptor",
-        "gustatory receptors",
-        "taste receptor repertoire",
-        "taste receptor repertoires"
-      ],
-      "bitter taste receptor": [
-        "bitter taste receptors",
-        "bitter receptor",
-        "bitter receptors",
-        "tas2r",
-        "tas2rs"
-      ],
-      "regulatory evolution": [
-        "cis-regulatory evolution",
-        "regulatory sequence evolution",
-        "regulatory divergence"
-      ],
-      "enhancer evolution": [
-        "enhancer divergence",
-        "enhancer turnover",
-        "enhancer gain",
-        "enhancer loss"
-      ],
-      "comparative transcriptomics": [
-        "comparative transcriptomic",
-        "comparative transcriptome",
-        "comparative transcriptomes"
-      ],
-      "immune tolerance": [
-        "immunological tolerance",
-        "viral tolerance",
-        "virus tolerance"
-      ]
-    },
+    "domain_boost_can_admit": false,
+    "_domain_boost_can_admit_comment": "false（默认）: domain_boost_keywords 只给已命中主关键词的论文加分，不能单独让论文入选；true: boost 关键词也可使论文入选。",
     "domain_boost_keywords": [
       "bats",
       "receptor repertoire",
@@ -318,16 +234,7 @@
       "hybrid modeling",
       "hybrid paper-polymer",
       "human tissues",
-      "human tissue",
-      "catalytic hybridization circuit",
-      "hybridization circuit",
-      "dna nanotechnology",
-      "dna self-assembly",
-      "microrna imaging",
-      "electronic hybridization",
-      "surface state",
-      "acetylide",
-      "graphdiyne"
+      "human tissue"
     ],
     "rejected_journals": [
       "Molecular cell",
@@ -364,12 +271,8 @@
     "_efetch_workers_comment": "PubMed efetch 并行线程数。有 API key 时建议 5（测试实测 3.5× 加速）；无 key 时建议 2-3；设为 1 恢复串行。",
     "efetch_workers": 5,
     "min_score": 2,
-    "min_quartile": 2,
+    "min_quartile": 1,
     "_min_quartile_comment": "CAS 分区阈值。1=只保留 Q1；2=保留 Q1+Q2（默认）；3=保留 Q1~Q3；4=全部接受。bioRxiv 预印本不受此过滤影响。首次试跑若结果为 0，先临时改为 4 排查。",
-    "reject_unknown_quartile": false,
-    "_reject_unknown_quartile_comment": "PubMed 期刊无法匹配 CAS 分区时是否硬拒。默认 false，避免因期刊名匹配失败误杀相关论文；会在 cas_quartile 留空供审计。",
-    "domain_boost_can_admit": false,
-    "_domain_boost_can_admit_comment": "domain_boost_keywords 默认只加分，不作为 PubMed/bioRxiv 主列表准入词。设为 true 才允许 boost-only 论文进入候选。",
     "top_n": 30,
     "build_review_must_score_min": 4,
     "build_review_show_appendix": false,

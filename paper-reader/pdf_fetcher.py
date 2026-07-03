@@ -27,6 +27,7 @@ Requirements:
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import os
 import re
@@ -95,6 +96,12 @@ def _find_free_port(start: int = 9240) -> int:
 
 
 def _existing_cdp_url() -> str:
+    """Return base URL of an already-running CDP-enabled Chrome, or empty string.
+
+    Checks PAPER_READER_CDP_URL / CHROME_CDP_URL / CDP_URL env vars first,
+    then probes common localhost ports (9222, 9223, 9240).  Returns the first
+    responsive base URL, e.g. 'http://127.0.0.1:9222'.
+    """
     configured = (
         os.environ.get("PAPER_READER_CDP_URL")
         or os.environ.get("CHROME_CDP_URL")
@@ -103,17 +110,95 @@ def _existing_cdp_url() -> str:
     ).strip().rstrip("/")
     candidates = [configured] if configured else []
     candidates.extend(f"http://127.0.0.1:{port}" for port in (9222, 9223, 9240))
-    import urllib.request
+    import urllib.request as _ur
     for base in candidates:
         if not base:
             continue
         try:
-            with urllib.request.urlopen(f"{base}/json/version", timeout=1) as resp:
+            with _ur.urlopen(f"{base}/json/version", timeout=1) as resp:
                 if resp.status == 200:
                     return base
         except Exception:
             continue
     return ""
+
+
+def _chrome_process_running() -> bool:
+    """Return True if any Chrome process is currently running.
+
+    Chrome on Windows does NOT reliably create a 'SingletonLock' file in the
+    user data directory (that mechanism is Linux/Mac-only).  On Windows, Chrome
+    uses a named pipe/mutex for singleton detection, so os.path.exists('SingletonLock')
+    always returns False even when Chrome is open.  This function uses the
+    tasklist command as the authoritative check.
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            timeout=5,
+        )
+        return b"chrome.exe" in (result.stdout or b"")
+    except Exception:
+        # Fall back to SingletonLock as last resort if tasklist fails
+        return False
+
+
+def _copy_chrome_cookies(src_profile_dir: str, dst_profile_dir: str) -> bool:
+    """Copy Chrome cookies from a locked real profile to a temp profile dir.
+
+    Chrome stores cookies as a DPAPI-encrypted SQLite database.  The AES key
+    is in 'Local State' (itself DPAPI-protected, user-bound).  Copying both
+    files lets a second Chrome process running as the *same Windows user*
+    decrypt and use all institutional session cookies — no re-login needed.
+
+    Returns True if at least one Cookies file was copied successfully.
+    """
+    import shutil
+    copied = False
+    try:
+        # 1. Copy Local State (holds the encrypted AES cookie key)
+        src_ls = os.path.join(src_profile_dir, "Local State")
+        dst_ls = os.path.join(dst_profile_dir, "Local State")
+        if os.path.isfile(src_ls):
+            shutil.copy2(src_ls, dst_ls)
+
+        # 2. Copy cookie database for the Default profile.
+        #    Chrome 96+ stores it in Default/Network/Cookies; older Chrome uses
+        #    Default/Cookies.  Try Network first, then fall back.
+        dst_default = os.path.join(dst_profile_dir, "Default")
+        os.makedirs(dst_default, exist_ok=True)
+
+        cookie_candidates = [
+            # (src_path, dst_path)
+            (
+                os.path.join(src_profile_dir, "Default", "Network", "Cookies"),
+                os.path.join(dst_default, "Network", "Cookies"),
+            ),
+            (
+                os.path.join(src_profile_dir, "Default", "Cookies"),
+                os.path.join(dst_default, "Cookies"),
+            ),
+        ]
+        for src_db, dst_db in cookie_candidates:
+            if not os.path.isfile(src_db):
+                continue
+            os.makedirs(os.path.dirname(dst_db), exist_ok=True)
+            # Copy SQLite main file + WAL / SHM journal files
+            for suffix in ("", "-wal", "-shm"):
+                src_f, dst_f = src_db + suffix, dst_db + suffix
+                if os.path.isfile(src_f):
+                    try:
+                        shutil.copy2(src_f, dst_f)
+                        copied = True
+                    except Exception:
+                        pass
+            if copied:
+                break   # found and copied; no need to try older path
+
+    except Exception:
+        pass
+    return copied
 
 
 async def _wait_for_cdp(port: int, max_wait: int = 25) -> bool:
@@ -155,6 +240,61 @@ _CF_MARKERS = [
     "enable javascript", "ray id", "verify you are human",
 ]
 
+# Map common DOI publisher prefixes to a stable slug so that the persistent
+# browser profile is always named after the *actual publisher*, not "doi_org".
+# This lets Cloudflare clearance cookies accumulate across invocations.
+_DOI_PREFIX_SLUG: dict[str, str] = {
+    "10.1126": "science_org",
+    "10.1038": "nature_com",
+    "10.1002": "wiley_com",
+    "10.1093": "oup_com",
+    "10.1016": "sciencedirect_com",
+    "10.1371": "plos_org",
+    "10.1073": "pnas_org",
+    "10.7554": "elifesciences_org",
+    "10.1101": "biorxiv_org",
+    "10.3389": "frontiersin_org",
+    "10.1136": "bmj_com",
+    "10.1056": "nejm_org",
+    "10.1016": "sciencedirect_com",
+    "10.1007": "springer_com",
+    "10.1017": "cambridge_org",
+    "10.1098": "royalsociety_org",
+    "10.1534": "genetics_org",
+    "10.1534": "g3_genes_org",
+    "10.7717": "peerj_com",
+    "10.3354": "int_res_com",
+    "10.1111": "wiley_com",
+    "10.1242": "biologists_com",
+    "10.1083": "rupress_org",
+    "10.1084": "rupress_org",
+    "10.1085": "rupress_org",
+}
+
+
+def _publisher_slug_from_url(url: str) -> str:
+    """Return a stable publisher slug for the persistent site profile.
+
+    For doi.org URLs, look up the DOI prefix in _DOI_PREFIX_SLUG.
+    For direct publisher URLs, use the netloc.  Falls back to "generic".
+    """
+    from urllib.parse import urlparse as _urlparse
+    try:
+        parsed = _urlparse(url)
+        netloc = parsed.netloc.lower().lstrip("www.")
+        if "doi.org" in netloc:
+            # Extract DOI prefix (e.g. "10.1126" from "/10.1126/science.abc1234")
+            path = parsed.path.lstrip("/")
+            prefix = ".".join(path.split("/")[0].split(".")[:2])
+            if prefix in _DOI_PREFIX_SLUG:
+                return _DOI_PREFIX_SLUG[prefix]
+            # Unknown DOI prefix — fall through to netloc-based slug
+            return "doi_org"
+        slug = re.sub(r"[^a-z0-9]", "_", netloc.split(":")[0])[:40]
+        return slug or "generic"
+    except Exception:
+        return "generic"
+
 
 def _auto_known_domains(url: str) -> list[str]:
     netloc = urlparse(url).netloc.lower()
@@ -178,6 +318,685 @@ def _is_real_article(title: str, url: str, known: list[str]) -> bool:
     if known:
         return any(d in url for d in known)
     return "doi.org" not in url
+
+
+# ── HTML figure candidate extraction (lightweight, no BS4) ───────────────────
+
+def _html_attr_map(tag_text: str) -> dict:
+    from html import unescape
+
+    attrs: dict[str, str] = {}
+    for match in re.finditer(r'''([A-Za-z0-9_:\-]+)\s*=\s*(["'])(.*?)\2''', tag_text, re.S):
+        attrs[match.group(1).lower()] = unescape(match.group(3).strip())
+    return attrs
+
+
+def _html_abs_url(value: str, base_url: str) -> str:
+    from urllib.parse import urljoin as _urljoin
+
+    value = (value or "").strip()
+    if not value or value.startswith("data:"):
+        return ""
+    if value.startswith("//"):
+        return "https:" + value
+    if value.startswith("http://") or value.startswith("https://"):
+        return value
+    return _urljoin(base_url, value)
+
+
+def _pick_src_from_attrs(attrs: dict, base_url: str) -> str:
+    for key in (
+        "data-full-size-image-src", "data-original", "data-img-src",
+        "data-lazy-src", "data-src", "src", "srcset", "data-srcset",
+    ):
+        raw = (attrs.get(key) or "").strip()
+        if not raw:
+            continue
+        if key.endswith("srcset"):
+            parts = [item.strip().split()[0] for item in raw.split(",") if item.strip()]
+            raw = parts[-1] if parts else ""
+        src = _html_abs_url(raw, base_url)
+        if src:
+            return src
+    return ""
+
+
+def _expand_wiley_cms_sources(src: str) -> list[str]:
+    src = (src or "").strip()
+    if not src:
+        return []
+    sources: list[str] = []
+
+    def add(value: str) -> None:
+        value = (value or "").strip()
+        if value and value not in sources:
+            sources.append(value)
+
+    parsed = urlparse(src)
+    path = parsed.path or ""
+    if "onlinelibrary.wiley.com" in parsed.netloc.lower() and "/cms/asset/" in path.lower():
+        match = re.search(r"(.+-fig-\d{4})-[a-z](\.(?:jpe?g|png|gif|webp))$", path, re.I)
+        if match:
+            base_path = match.group(1)
+            for ext in (".jpg", ".png", ".gif", ".webp"):
+                add(parsed._replace(path=base_path + ext, query="", fragment="").geturl())
+    if "silverchair-cdn.com" in parsed.netloc.lower():
+        # OUP/Silverchair article pages often expose signed thumbnail URLs such
+        # as /m_msag127f1.jpeg.  The full-resolution asset is the same signed URL
+        # without the m_ prefix.
+        upgraded_path = re.sub(r"/m_([^/]+\.(?:jpe?g|png|webp|gif))$", r"/\1", path, flags=re.I)
+        if upgraded_path != path:
+            add(parsed._replace(path=upgraded_path).geturl())
+    add(src)
+    return sources
+
+
+def _figure_source_candidates(item: dict) -> list[str]:
+    sources: list[str] = []
+
+    def add(value: str) -> None:
+        for expanded in _expand_wiley_cms_sources(value):
+            if expanded and expanded not in sources:
+                sources.append(expanded)
+
+    for value in item.get("source_candidates", []) or []:
+        add(value)
+    for key in ("src", "href"):
+        add(item.get(key, ""))
+    return sources
+
+
+def _score_html_figure_candidate(item: dict) -> int:
+    src_hay = " ".join(str(item.get(key, "") or "") for key in ("src", "href")).lower()
+    text_hay = " ".join(str(item.get(key, "") or "") for key in ("caption", "alt")).lower()
+    hay = f"{src_hay} {text_hay}"
+    score = 0
+    if item.get("source") in {"figure", "dom_figure", "dom_view_large"}:
+        score += 20
+    if re.search(r"(?:^|[-_/])(?:fig(?:ure)?[-_]?0?1|f0?1|gr1)(?:\.|[-_/]|$)", src_hay):
+        score += 220
+    elif re.search(r"[A-Za-z0-9]+f0?1\.(?:jpe?g|png|webp|gif)", src_hay):
+        score += 180
+    elif re.match(r"\s*(?:fig(?:ure)?\.?\s*1\b|1[.)])", text_hay):
+        score += 120
+    elif re.search(r"\bfig(?:ure)?\.?\s*1\b", text_hay):
+        score += 35
+    if "/view-large/figure/" in src_hay:
+        score += 100
+    if re.search(r"(?:^|[-_/])(?:fig(?:ure)?[-_]?[2-9]|f[2-9]|gr[2-9])(?:\.|[-_/]|$)", src_hay):
+        score -= 120
+    elif re.search(r"[A-Za-z0-9]+f[2-9]\.(?:jpe?g|png|webp|gif)", src_hay):
+        score -= 120
+    if re.search(r"graphical abstract|ga1\.|[-_/]fa\.|unfig", hay):
+        score -= 90
+    if any(token in hay for token in ("logo", "spinner", "icon", "avatar", "advert")):
+        score -= 200
+    return score
+
+def _image_urls_from_html(html: str, base_url: str) -> list[str]:
+    urls: list[str] = []
+
+    def add(value: str) -> None:
+        value = _html_abs_url(value, base_url)
+        if value and value not in urls:
+            urls.append(value)
+
+    for tag_match in re.finditer(r"<(?:img|source)\b[^>]*>", html, re.S | re.I):
+        attrs = _html_attr_map(tag_match.group(0))
+        add(_pick_src_from_attrs(attrs, base_url))
+    for match in re.finditer(r"https?://[^\"'<>\s]+?\.(?:jpe?g|png|webp|gif)(?:\?[^\"'<>\s]+)?", html, re.I):
+        add(match.group(0))
+    urls.sort(key=lambda value: ("/m_" in value.lower(), -_score_html_figure_candidate({"src": value})))
+    return urls
+
+
+def _extract_wiley_html_text(html: str) -> str:
+    """Extract usable article text from Wiley HTML without waiting on the page."""
+    from html import unescape
+
+    html = html or ""
+    if not html:
+        return ""
+    parts: list[str] = []
+
+    for pattern in (
+        r'<meta\s+name=["\']citation_abstract["\']\s+content=["\'](.*?)["\']',
+        r'<meta\s+property=["\']og:description["\']\s+content=["\'](.*?)["\']',
+        r'<meta\s+name=["\']description["\']\s+content=["\'](.*?)["\']',
+    ):
+        match = re.search(pattern, html, re.S | re.I)
+        if match:
+            text = re.sub(r"\s+", " ", unescape(match.group(1))).strip()
+            if len(text) > 80:
+                parts.append(text)
+                break
+
+    body = re.sub(r"<(script|style|noscript|svg)\b.*?</\1>", " ", html, flags=re.S | re.I)
+    body = re.sub(r"<(nav|footer|header|aside)\b.*?</\1>", " ", body, flags=re.S | re.I)
+    paras = re.findall(r"<p\b[^>]*>(.*?)</p>", body, flags=re.S | re.I)
+    in_refs = False
+    for para in paras:
+        clean = re.sub(r"<[^>]+>", " ", para)
+        clean = re.sub(r"\s+", " ", unescape(clean)).strip()
+        if len(clean) < 50:
+            continue
+        low = clean.lower()
+        if re.match(r"^(references|literature cited|supporting information)\b", low):
+            in_refs = True
+        if in_refs:
+            continue
+        if any(skip in low for skip in ("cookie", "privacy policy", "advertisement", "sign in to access")):
+            continue
+        parts.append(clean)
+        if sum(len(p) for p in parts) > 80_000:
+            break
+
+    text = "\n\n".join(parts)
+    return text[:80_000]
+
+
+def _extract_html_fig_candidates(html: str, base_url: str) -> list[dict]:
+    """Return ranked image candidates for the article's primary figure.
+
+    The candidates are still just URLs and captions; actual bytes are downloaded
+    later.  That lets us use publisher-specific fallbacks such as OUP view-large
+    pages and page-context fetches for Cloudflare-protected CMS assets.
+    """
+    candidates: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    tag_strip = re.compile(r"<[^>]+>")
+
+    def add_candidate(item: dict) -> None:
+        sources = _figure_source_candidates(item)
+        if not sources:
+            return
+        key = (sources[0], item.get("caption", ""))
+        if key in seen:
+            return
+        seen.add(key)
+        item["source_candidates"] = sources
+        item["score"] = _score_html_figure_candidate(item)
+        if item["score"] > -100:
+            candidates.append(item)
+
+    for idx, fm in enumerate(re.finditer(r"<figure\b[^>]*>(.*?)</figure>", html, re.S | re.I)):
+        inner = fm.group(1)
+        cap_m = re.search(r"<figcaption[^>]*>(.*?)</figcaption>", inner, re.S | re.I)
+        caption = ""
+        if cap_m:
+            caption = re.sub(r"\s+", " ", tag_strip.sub(" ", cap_m.group(1))).strip()[:700]
+        href = ""
+        href_m = re.search(r'''\bhref\s*=\s*(["'])(.*?)\1''', inner, re.S | re.I)
+        if href_m:
+            href = _html_abs_url(href_m.group(2), base_url)
+        srcs: list[str] = []
+        alts: list[str] = []
+        for tag_match in re.finditer(r"<(?:img|source)\b[^>]*>", inner, re.S | re.I):
+            attrs = _html_attr_map(tag_match.group(0))
+            src = _pick_src_from_attrs(attrs, base_url)
+            if src and src not in srcs:
+                srcs.append(src)
+            alt = (attrs.get("alt") or attrs.get("aria-label") or "").strip()
+            if alt and alt not in alts:
+                alts.append(alt)
+        add_candidate({
+            "index": idx,
+            "src": srcs[0] if srcs else "",
+            "href": href,
+            "caption": caption,
+            "alt": " ".join(alts)[:500],
+            "source": "figure",
+            "source_candidates": srcs + ([href] if href else []),
+        })
+
+    # Some publishers render key figures as image blocks rather than semantic
+    # <figure> elements.  Keep this broad but rank aggressively so logos and
+    # graphical abstracts do not beat Fig. 1.
+    for idx, tag_match in enumerate(re.finditer(r"<img\b[^>]*>", html, re.S | re.I)):
+        attrs = _html_attr_map(tag_match.group(0))
+        src = _pick_src_from_attrs(attrs, base_url)
+        if not src:
+            continue
+        alt = (attrs.get("alt") or attrs.get("aria-label") or "").strip()
+        hay = f"{src} {alt}".lower()
+        if not any(token in hay for token in ("fig", "figure", "mediaobjects", "cms/", "gr1", "f1", "silverchair-cdn")):
+            continue
+        add_candidate({
+            "index": idx,
+            "src": src,
+            "href": "",
+            "caption": "",
+            "alt": alt[:500],
+            "source": "image",
+            "source_candidates": [src],
+        })
+
+    # OUP/Silverchair may keep the full-size figure page in viewer config rather
+    # than a visible anchor.
+    for idx, match in enumerate(re.finditer(r"""[^\s"'<>]*/view-large/figure/[^\s"'<>]+""", html, re.I)):
+        href = _html_abs_url(match.group(0), base_url)
+        add_candidate({
+            "index": idx,
+            "src": "",
+            "href": href,
+            "caption": "",
+            "alt": "",
+            "source": "html_view_large",
+            "source_candidates": [href],
+        })
+
+    # OUP/Silverchair commonly exposes figure image URLs in JSON-LD/meta fields
+    # instead of visible <figure> nodes in the captured HTML.
+    for idx, src in enumerate(_image_urls_from_html(html, base_url)):
+        hay = src.lower()
+        if not any(token in hay for token in ("fig", "figure", "mediaobjects", "cms/", "gr1", "f1", "silverchair-cdn")):
+            continue
+        add_candidate({
+            "index": idx,
+            "src": src,
+            "href": "",
+            "caption": "",
+            "alt": "",
+            "source": "html_image_url",
+            "source_candidates": [src],
+        })
+
+    candidates.sort(key=_score_html_figure_candidate, reverse=True)
+    return candidates[:8]
+
+
+async def _collect_dom_fig_candidates(page, base_url: str) -> list[dict]:
+    try:
+        rows = await page.evaluate(
+            """
+            (baseUrl) => {
+              const abs = (value) => {
+                if (!value) return '';
+                try { return new URL(value, baseUrl || location.href).href; } catch (e) { return value || ''; }
+              };
+              const pick = (img) => {
+                if (!img) return '';
+                for (const attr of ['data-full-size-image-src', 'currentSrc', 'src', 'data-original', 'data-img-src', 'data-lazy-src', 'data-src', 'srcset', 'data-srcset']) {
+                  let raw = attr === 'currentSrc' ? img.currentSrc : (attr === 'src' ? img.src : img.getAttribute(attr));
+                  if (!raw) continue;
+                  if (attr.endsWith('srcset')) {
+                    const parts = raw.split(',').map(x => x.trim().split(/\s+/)[0]).filter(Boolean);
+                    raw = parts.length ? parts[parts.length - 1] : '';
+                  }
+                  const url = abs(raw);
+                  if (url) return url;
+                }
+                return '';
+              };
+              const out = [];
+              const push = (row) => {
+                if (!row.src && !row.href) return;
+                out.push(row);
+              };
+              Array.from(document.querySelectorAll('figure, .figure, .fig, [class*="figure"], [id*="fig"]')).slice(0, 40).forEach((node, idx) => {
+                const img = node.querySelector('img, source');
+                const cap = node.querySelector('figcaption, .caption, [class*="caption"]');
+                const link = node.querySelector('a[href*="/view-large/figure/"], a[href*="figure"], a[href]');
+                push({
+                  index: idx,
+                  src: pick(img),
+                  href: link ? abs(link.getAttribute('href')) : '',
+                  caption: (cap ? cap.innerText : node.innerText || '').trim().slice(0, 700),
+                  alt: img ? (img.alt || img.getAttribute('aria-label') || '').trim().slice(0, 500) : '',
+                  source: 'dom_figure'
+                });
+              });
+              Array.from(document.querySelectorAll('a[href*="/view-large/figure/"]')).slice(0, 20).forEach((a, idx) => {
+                push({
+                  index: idx,
+                  src: '',
+                  href: abs(a.getAttribute('href')),
+                  caption: (a.innerText || '').trim().slice(0, 700),
+                  alt: '',
+                  source: 'dom_view_large'
+                });
+              });
+              let attrIndex = 0;
+              Array.from(document.querySelectorAll('*')).slice(0, 3000).forEach((node) => {
+                for (const attr of Array.from(node.attributes || [])) {
+                  const value = attr.value || '';
+                  if (!value.includes('/view-large/figure/')) continue;
+                  const match = value.match(/[^\s"'<>]*\/view-large\/figure\/[^\s"'<>]+/);
+                  if (!match) continue;
+                  push({
+                    index: attrIndex++,
+                    src: '',
+                    href: abs(match[0]),
+                    caption: (node.innerText || '').trim().slice(0, 700),
+                    alt: '',
+                    source: 'dom_view_large_attr'
+                  });
+                }
+              });
+              return out;
+            }
+            """,
+            base_url,
+        )
+        if "academic.oup.com" in (base_url or "").lower() and not any(
+            "/view-large/figure/" in f"{row.get('href', '')} {row.get('src', '')}"
+            for row in (rows or [])
+        ):
+            original_url = page.url
+            for selector in (
+                "img[src*='f1']",
+                "img[src*='fig1']",
+                "img[src*='m_']",
+                "figure img",
+            ):
+                try:
+                    loc = page.locator(selector).first
+                    if not await loc.count():
+                        continue
+                    await loc.scroll_into_view_if_needed(timeout=5_000)
+                    await loc.click(timeout=5_000)
+                    await page.wait_for_timeout(2_000)
+                    extra = await page.evaluate(
+                        """
+                        (baseUrl) => {
+                          const abs = (value) => {
+                            if (!value) return '';
+                            try { return new URL(value, baseUrl || location.href).href; } catch (e) { return value || ''; }
+                          };
+                          const out = [];
+                          const push = (href, caption, source) => {
+                            if (!href) return;
+                            out.push({ index: out.length, src: '', href: abs(href), caption: caption || '', alt: '', source });
+                          };
+                          Array.from(document.querySelectorAll('a[href*="/view-large/figure/"]')).forEach((a) => {
+                            push(a.getAttribute('href'), (a.innerText || '').trim().slice(0, 700), 'oup_viewer_anchor');
+                          });
+                          Array.from(document.querySelectorAll('*')).slice(0, 3000).forEach((node) => {
+                            for (const attr of Array.from(node.attributes || [])) {
+                              const value = attr.value || '';
+                              if (!value.includes('/view-large/figure/')) continue;
+                              const match = value.match(/[^\\s"'<>]*\/view-large\/figure\/[^\\s"'<>]+/);
+                              if (match) push(match[0], (node.innerText || '').trim().slice(0, 700), 'oup_viewer_attr');
+                            }
+                          });
+                          return out;
+                        }
+                        """,
+                        base_url,
+                    )
+                    if extra:
+                        rows.extend(extra)
+                    try:
+                        await page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    if page.url != original_url:
+                        try:
+                            await page.go_back(wait_until="domcontentloaded", timeout=10_000)
+                        except Exception:
+                            pass
+                    if extra:
+                        break
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    candidates: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows or []:
+        item = {
+            "index": int(row.get("index", 0) or 0),
+            "src": _html_abs_url(str(row.get("src", "") or ""), base_url),
+            "href": _html_abs_url(str(row.get("href", "") or ""), base_url),
+            "caption": str(row.get("caption", "") or ""),
+            "alt": str(row.get("alt", "") or ""),
+            "source": str(row.get("source", "dom_figure") or "dom_figure"),
+        }
+        item["source_candidates"] = _figure_source_candidates(item)
+        if not item["source_candidates"]:
+            continue
+        item["score"] = _score_html_figure_candidate(item)
+        key = (item["source_candidates"][0], item.get("caption", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(item)
+    candidates.sort(key=_score_html_figure_candidate, reverse=True)
+    return candidates[:8]
+
+
+async def _page_fetch_image_bytes(page, url: str) -> tuple[int, str, bytes]:
+    try:
+        payload = await page.evaluate(
+            """
+            async (url) => {
+              const resp = await fetch(url, { credentials: 'include', headers: { 'Accept': 'image/*,*/*' } });
+              const ct = resp.headers.get('content-type') || '';
+              const buf = await resp.arrayBuffer();
+              const bytes = new Uint8Array(buf);
+              let binary = '';
+              const chunk = 0x8000;
+              for (let i = 0; i < bytes.length; i += chunk) {
+                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+              }
+              return { status: resp.status, contentType: ct, b64: btoa(binary) };
+            }
+            """,
+            url,
+        )
+        data = base64.b64decode(payload.get("b64", "") or "")
+        return int(payload.get("status", 0) or 0), str(payload.get("contentType", "") or ""), data
+    except Exception:
+        return 0, "", b""
+
+
+def _image_dimensions_from_bytes(data: bytes) -> tuple[int, int]:
+    if len(data) >= 24 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if len(data) >= 4 and data[:2] == b"\xff\xd8":
+        pos = 2
+        while pos + 9 < len(data):
+            if data[pos] != 0xFF:
+                pos += 1
+                continue
+            marker = data[pos + 1]
+            pos += 2
+            if marker in {0xD8, 0xD9, 0x01} or 0xD0 <= marker <= 0xD7:
+                continue
+            if pos + 2 > len(data):
+                break
+            seg_len = int.from_bytes(data[pos:pos + 2], "big")
+            if seg_len < 2 or pos + seg_len > len(data):
+                break
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                height = int.from_bytes(data[pos + 3:pos + 5], "big")
+                width = int.from_bytes(data[pos + 5:pos + 7], "big")
+                return width, height
+            pos += seg_len
+    if len(data) >= 30 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        if data[12:16] == b"VP8X" and len(data) >= 30:
+            width = 1 + int.from_bytes(data[24:27], "little")
+            height = 1 + int.from_bytes(data[27:30], "little")
+            return width, height
+    return 0, 0
+
+
+def _acceptable_image_bytes(data: bytes, content_type: str) -> bool:
+    if not (content_type or "").lower().startswith("image/") or len(data) <= 5_000:
+        return False
+    width, height = _image_dimensions_from_bytes(data)
+    if width and height and max(width, height) < 700:
+        return False
+    return True
+
+
+def _image_extension_from_response(url: str, content_type: str) -> str:
+    ext = Path(urlparse(url).path).suffix.lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        ct = (content_type or "").lower()
+        if "png" in ct:
+            ext = ".png"
+        elif "webp" in ct:
+            ext = ".webp"
+        elif "gif" in ct:
+            ext = ".gif"
+        else:
+            ext = ".jpg"
+    if "jpeg" in (content_type or "").lower() and ext not in {".jpg", ".jpeg"}:
+        ext = ".jpg"
+    return ext
+
+
+def _plain_http_image_bytes(url: str, referer: str) -> tuple[int, str, bytes]:
+    try:
+        from urllib.request import Request, urlopen
+
+        req = Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                "Referer": referer or url,
+            },
+        )
+        with urlopen(req, timeout=30) as resp:
+            data = resp.read()
+            ct = resp.headers.get("content-type", "") or ""
+            return int(getattr(resp, "status", 200) or 200), ct, data
+    except Exception:
+        return 0, "", b""
+
+
+async def _try_download_image_url(
+    page,
+    context,
+    url: str,
+    referer: str,
+    out_path: "Path",
+) -> "tuple[bool, str, str]":
+    try:
+        resp = await context.request.get(
+            url,
+            headers={"Referer": referer, "Accept": "image/*,*/*"},
+            timeout=20_000,
+        )
+        data = await resp.body()
+        ct = resp.headers.get("content-type", "") or ""
+        if resp.status == 200 and _acceptable_image_bytes(data, ct):
+            actual = Path(out_path).with_suffix(_image_extension_from_response(url, ct))
+            actual.parent.mkdir(parents=True, exist_ok=True)
+            actual.write_bytes(data)
+            return True, str(actual), url
+        if resp.status == 200 and "html" in ct.lower() and len(data) > 500:
+            html = data.decode("utf-8", errors="replace")
+            for nested in _image_urls_from_html(html, url):
+                ok, saved, source = await _try_download_image_url(page, context, nested, url, out_path)
+                if ok:
+                    return ok, saved, source
+    except Exception:
+        pass
+
+    status, ct, data = _plain_http_image_bytes(url, referer)
+    if status == 200 and _acceptable_image_bytes(data, ct):
+        actual = Path(out_path).with_suffix(_image_extension_from_response(url, ct))
+        actual.parent.mkdir(parents=True, exist_ok=True)
+        actual.write_bytes(data)
+        return True, str(actual), url
+
+    try:
+        status, ct, data = await asyncio.wait_for(_page_fetch_image_bytes(page, url), timeout=15)
+    except Exception:
+        status, ct, data = 0, "", b""
+    if status == 200 and _acceptable_image_bytes(data, ct):
+        actual = Path(out_path).with_suffix(_image_extension_from_response(url, ct))
+        actual.parent.mkdir(parents=True, exist_ok=True)
+        actual.write_bytes(data)
+        return True, str(actual), url
+    return False, "", ""
+
+
+async def _try_download_html_fig1(
+    page,
+    context,
+    item: dict,
+    referer: str,
+    out_path: "Path",
+) -> "tuple[bool, str, str]":
+    """Download one real image file for the top HTML figure candidate."""
+    for src in _figure_source_candidates(item):
+        ok, saved, source = await _try_download_image_url(page, context, src, referer, out_path)
+        if ok:
+            return ok, saved, source
+    return False, "", ""
+
+
+def _doi_from_url_or_text(value: str) -> str:
+    m = re.search(r"(10\.\d{4,9}/[^\s?#\"'<>]+)", value or "", re.IGNORECASE)
+    return m.group(1).rstrip(".,;)") if m else ""
+
+
+def _wiley_pdfdirect_url(article_url: str) -> str:
+    if "onlinelibrary.wiley.com" not in (article_url or "").lower():
+        return ""
+    doi = _doi_from_url_or_text(article_url)
+    if not doi.startswith(("10.1111/", "10.1002/")):
+        return ""
+    return f"https://onlinelibrary.wiley.com/doi/pdfdirect/{quote(doi, safe='/')}?download=true"
+
+
+def _springer_pdfdirect_url(article_url: str) -> str:
+    doi = _doi_from_url_or_text(article_url)
+    if doi.startswith("10.1186/"):
+        return f"https://link.springer.com/content/pdf/{quote(doi, safe='/')}_reference.pdf"
+    if doi.startswith("10.1007/"):
+        return f"https://link.springer.com/content/pdf/{quote(doi, safe='/')}.pdf"
+    return ""
+
+
+async def _try_fetch_wiley_html_fig1_via_context(
+    page,
+    context,
+    article_url: str,
+    out_path: "Path",
+) -> "tuple[bool, str, str, str, str]":
+    """Fetch Wiley article HTML through the browser context and download Fig1.
+
+    Wiley's CMS image URLs are Cloudflare-protected for plain HTTP clients, but
+    the Playwright context can reuse the persistent cf_clearance cookie.  This
+    path avoids waiting on the full page/PDF workflow just to obtain Fig1.
+    """
+    if "onlinelibrary.wiley.com" not in (article_url or "").lower():
+        return False, "", "", "", ""
+    try:
+        resp = await context.request.get(
+            article_url,
+            headers={"Accept": "text/html,*/*"},
+            timeout=20_000,
+        )
+        data = await resp.body()
+        ct = resp.headers.get("content-type", "") or ""
+        if resp.status != 200 or "html" not in ct.lower() or len(data) < 5_000:
+            return False, "", "", "", ""
+        html = data.decode("utf-8", errors="replace")
+        lower = html.lower()
+        if any(marker in lower for marker in _CF_MARKERS):
+            return False, "", "", "", ""
+        full_text = _extract_wiley_html_text(html)
+        candidates = sorted(
+            _extract_html_fig_candidates(html, article_url),
+            key=_score_html_figure_candidate,
+            reverse=True,
+        )
+        for cand in candidates[:6]:
+            ok, saved, source = await _try_download_html_fig1(
+                page, context, cand, article_url, out_path
+            )
+            if ok:
+                caption = cand.get("caption") or cand.get("alt") or "Figure 1"
+                return True, saved, source, caption, full_text
+    except Exception:
+        pass
+    return False, "", "", "", ""
 
 
 # ── PDF-link discovery ────────────────────────────────────────────────────────
@@ -348,7 +1167,10 @@ async def _navigate_and_capture(page, context, url: str,
 
     pdf_url = detected[0] if detected else url
 
-    b = await _js_fetch(page, pdf_url)
+    try:
+        b = await asyncio.wait_for(_js_fetch(page, pdf_url), timeout=30)
+    except Exception:
+        b = b""
     if b:
         return b
     b = await _api_fetch(context, pdf_url, referer=referer or url)
@@ -382,6 +1204,12 @@ async def _quick_paywall_check(page, pdf_url: str) -> str:
         pass
     return ""
 
+
+async def _safe_close_handle(handle, timeout: int = 10) -> None:
+    try:
+        await asyncio.wait_for(handle.close(), timeout=timeout)
+    except Exception:
+        pass
 
 async def _accept_cookies(page):
     for lbl in ["Accept all cookies", "Accept all", "Accept Cookies",
@@ -676,12 +1504,21 @@ async def _run_patchright_pipeline(
     fig_save_path: Path | None,
 ) -> dict:
     """
-    Open article_url in Chrome (CDP via patchright), find PDF link,
-    download PDF, extract text and Fig1.
-    Returns result dict.
+    Open article_url with patchright, find PDF link, download PDF, extract
+    text and Fig1.  Returns result dict.
+
+    Browser strategy (priority order):
+      1. Existing CDP Chrome (PAPER_READER_CDP_URL / ports 9222-9240)
+         → attaches to user's running Chrome; all session cookies available.
+      2. patchright launch_persistent_context  ← NEW DEFAULT
+         → patchright launches its own Chromium with full fingerprint patches;
+           navigator.webdriver is hidden, headless markers removed.
+         → Cloudflare Turnstile passes automatically (~15s first visit,
+           ~5s on repeats because cf_clearance is stored in the profile).
+         → Profile is keyed by publisher slug so each site accumulates its own
+           clearance cookies independently.
     """
-    from patchright.async_api import async_playwright  # imported here to avoid
-                                                        # mandatory dep at module load
+    from patchright.async_api import async_playwright  # lazy import
 
     result: dict = {
         "full_text": "",
@@ -692,137 +1529,228 @@ async def _run_patchright_pipeline(
         "acquisition_path": "",
         "paywall": False,
         "paywall_reason": "",
-        "cookie_source": "none",
     }
 
     known_domains = _auto_known_domains(article_url)
+
+    # ── Priority 1: attach to an already-running CDP-enabled Chrome ──────────
     existing_cdp = _existing_cdp_url()
-    proc = None
-    port = 0
 
-    # ── Prefer user's real Chrome profile so institutional cookies are available ──
-    # Priority:
-    #   1. Existing CDP Chrome (PAPER_READER_CDP_URL / CHROME_CDP_URL, or common
-    #      localhost ports). This is the only reliable way to reuse cookies while
-    #      the user's everyday Chrome profile is already open.
-    #   2. User's default Chrome User Data directory, if Chrome is NOT currently
-    #      running (no SingletonLock).  Carries cookies / institutional login.
-    #   3. Temp directory fallback — always safe; no cookies.
-    # Rationale for SingletonLock check: if Chrome is already running with that
-    # profile, launching a second instance with --remote-debugging-port will
-    # silently delegate the URL to the existing Chrome and then exit, leaving
-    # our CDP port unbound.  _wait_for_cdp would timeout.  Falling back to a
-    # temp profile avoids the conflict (at the cost of no institutional cookies
-    # for that one call).
-    if existing_cdp:
-        result["cookie_source"] = "existing_cdp_browser"
-        cdp_url = existing_cdp
-    else:
-        chrome_exe = _find_chrome()
-        if not chrome_exe:
-            result["paywall_reason"] = "Chrome not found"
-            return result
-        port = _find_free_port(9240)
-        cdp_url = f"http://localhost:{port}"
-        _local_app_data = os.environ.get("LOCALAPPDATA", "")
-        _real_profile = os.environ.get("PAPER_READER_CHROME_USER_DATA_DIR", "").strip()
-        if not _real_profile and _local_app_data:
-            _real_profile = os.path.join(_local_app_data, "Google", "Chrome", "User Data")
-        _profile_in_use = os.path.exists(os.path.join(_real_profile, "SingletonLock")) if _real_profile else False
-        if _real_profile and os.path.isdir(_real_profile) and not _profile_in_use:
-            user_data_dir = _real_profile
-            result["cookie_source"] = "real_chrome_profile"
-        else:
-            # Use a fresh profile every time. Reusing a temp profile can leave a
-            # stale SingletonLock/session behind; Chrome then exits or delegates
-            # to another process and the requested CDP port never opens.
-            tmp = tempfile.mkdtemp(prefix=f"pdf_fetcher_cdp_{port}_")
-            user_data_dir = tmp
-            result["cookie_source"] = "temp_profile_no_cookies"
-            if _profile_in_use:
-                result["paywall_reason"] = "Default Chrome profile is in use; falling back to temp profile without cookies"
-
-        launch_args = [
-            chrome_exe,
-            f"--remote-debugging-port={port}",
-            f"--user-data-dir={user_data_dir}",
-            "--no-first-run",
-            "--no-default-browser-check",
-        ]
-        profile_dir = os.environ.get("PAPER_READER_CHROME_PROFILE_DIRECTORY", "").strip()
-        if profile_dir:
-            launch_args.append(f"--profile-directory={profile_dir}")
-        launch_args.append(article_url)
-        proc = subprocess.Popen(
-            launch_args,
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-        )
-
-    pdf_bytes   = b""
-    real_url    = ""
-
-    async def _close_browser(browser) -> None:
-        if existing_cdp:
-            return
-        await browser.close()
+    pdf_bytes = b""
+    real_url  = ""
+    _html_fig1_saved = False
 
     try:
         async with async_playwright() as pw:
-            if not existing_cdp and not await _wait_for_cdp(port):
-                result["paywall_reason"] = "CDP timeout"
-                return result
 
-            browser = await pw.chromium.connect_over_cdp(cdp_url)
-            context = browser.contexts[0]
-            page    = context.pages[0] if context.pages else await context.new_page()
+            if existing_cdp:
+                # ── CDP path: connect to user's Chrome ────────────────────────
+                browser = await pw.chromium.connect_over_cdp(existing_cdp)
+                context = browser.contexts[0]
+                page    = context.pages[0] if context.pages else await context.new_page()
+                result["cookie_source"] = "existing_cdp_browser"
+                _close_context = False   # don't close browser we didn't open
 
-            # Navigate to article if needed
-            try:
-                cur = page.url
-                if not any(d in cur for d in (known_domains or ["__NONE__"])):
-                    await page.goto(article_url,
-                                    wait_until="domcontentloaded", timeout=60_000)
-                    await page.wait_for_timeout(3000)
-            except Exception:
-                pass
+                if fig_save_path and not _html_fig1_saved:
+                    _ok, _saved, _source_url, _caption, _wiley_text = await _try_fetch_wiley_html_fig1_via_context(
+                        page, context, article_url, fig_save_path
+                    )
+                    if _ok:
+                        _html_fig1_saved = True
+                        result["figure_paths"] = [_saved]
+                        result["figure_items"] = [{
+                            "path":       _saved,
+                            "caption":    _caption,
+                            "source_url": _source_url,
+                        }]
+                        if _wiley_text:
+                            result["full_text"] = _wiley_text
+                            result["summary_mode"] = "基于 Wiley HTML 全文/网页正文"
+                            result["acquisition_path"] = "Wiley HTML + Fig1 via browser context"
+                            result["page_url"] = article_url
+                            # Keep going: Wiley HTML/Fig1 is useful, but the
+                            # production reader must still try pdfdirect.
 
-            # Wait for real article page (up to 120 s, handles Cloudflare)
-            for i in range(60):
                 try:
-                    t, u = await page.title(), page.url
-                    if not known_domains and "doi.org" not in u:
-                        known_domains = _auto_known_domains(u)
-                    if _is_real_article(t, u, known_domains):
-                        real_url = u
-                        break
+                    cur = page.url
+                    if not any(d in cur for d in (known_domains or ["__NONE__"])):
+                        await page.goto(article_url,
+                                        wait_until="domcontentloaded", timeout=60_000)
+                        await page.wait_for_timeout(3000)
                 except Exception:
                     pass
-                await asyncio.sleep(2)
 
-            if not real_url:
-                result["paywall_reason"] = "Article page load timeout"
-                await _close_browser(browser)
-                return result
+            else:
+                # ── patchright launch_persistent_context ──────────────────────
+                # Use a persistent profile keyed by publisher slug.
+                # cf_clearance and institutional session cookies survive
+                # across runs; Cloudflare passes automatically on repeat visits.
+                _slug = _publisher_slug_from_url(article_url)
+                _profile_dir = os.path.join(
+                    tempfile.gettempdir(),
+                    f"pdf_fetcher_pw_{_slug}",
+                )
+                os.makedirs(_profile_dir, exist_ok=True)
+                result["cookie_source"] = (
+                    "patchright_persistent_profile"
+                    if os.path.isdir(_profile_dir) else
+                    "patchright_new_profile"
+                )
+
+                context = await asyncio.wait_for(
+                    pw.chromium.launch_persistent_context(
+                        _profile_dir,
+                        headless=False,       # visible window; Cloudflare JS checks pass
+                        no_viewport=True,
+                        args=[
+                            "--lang=en-US,en",
+                            "--disable-blink-features=AutomationControlled",
+                            "--no-first-run",
+                        ],
+                    ),
+                    timeout=180,
+                )
+                _close_context = True
+
+                page = context.pages[0] if context.pages else await context.new_page()
+
+                if fig_save_path and not _html_fig1_saved:
+                    _ok, _saved, _source_url, _caption, _wiley_text = await _try_fetch_wiley_html_fig1_via_context(
+                        page, context, article_url, fig_save_path
+                    )
+                    if _ok:
+                        _html_fig1_saved = True
+                        result["figure_paths"] = [_saved]
+                        result["figure_items"] = [{
+                            "path":       _saved,
+                            "caption":    _caption,
+                            "source_url": _source_url,
+                        }]
+                        if _wiley_text:
+                            result["full_text"] = _wiley_text
+                            result["summary_mode"] = "基于 Wiley HTML 全文/网页正文"
+                            result["acquisition_path"] = "Wiley HTML + Fig1 via browser context"
+                            result["page_url"] = article_url
+                            # Keep going: Wiley HTML/Fig1 is useful, but the
+                            # production reader must still try pdfdirect.
+
+                try:
+                    await page.goto(article_url,
+                                    wait_until="domcontentloaded", timeout=60_000)
+                    await page.wait_for_timeout(2000)
+                except Exception:
+                    pass
+
+            # ── Wait for real article page (up to 120s, handles Cloudflare) ──
+            _direct_pdf_url = _wiley_pdfdirect_url(article_url) or _springer_pdfdirect_url(article_url)
+            if _direct_pdf_url:
+                # Some publishers expose stable PDF endpoints.  Do not spend two
+                # minutes trying to prove the page is "real" before using them.
+                try:
+                    real_url = page.url or article_url
+                except Exception:
+                    real_url = article_url
+            else:
+                _real_wait_ticks = 20 if (
+                    _html_fig1_saved and "onlinelibrary.wiley.com" in article_url.lower()
+                ) else 60
+                for i in range(_real_wait_ticks):
+                    try:
+                        t, u = await page.title(), page.url
+                        if not known_domains and "doi.org" not in u:
+                            known_domains = _auto_known_domains(u)
+                        if _is_real_article(t, u, known_domains):
+                            real_url = u
+                            break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2)
+
+                if not real_url:
+                    result["paywall_reason"] = "Article page load timeout"
+                    if _close_context:
+                        await _safe_close_handle(context)
+                    else:
+                        await _safe_close_handle(browser)
+                    return result
 
             await asyncio.sleep(2)
             await _accept_cookies(page)
             await asyncio.sleep(1)
 
-            # Discover PDF / viewer URLs
-            _, pdf_url   = await _find_pdf_url(page)
-            viewer_url   = await _find_viewer_url(page)
+            # Scroll to trigger lazy-loading of figures before capturing HTML
+            try:
+                for _ in range(5):
+                    await page.keyboard.press("PageDown")
+                    await page.wait_for_timeout(400)
+                await page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
+            # Capture rendered HTML (after scroll, CDN img URLs are resolved)
+            _html_content = ""
+            try:
+                _html_content = await page.content()
+                result["page_html"] = _html_content[:300_000]
+                result["page_url"]  = real_url
+            except Exception:
+                pass
+
+            # ── HTML Fig1 extraction (preferred: CDN download via context) ────
+            # Try to download Figure 1 straight from the rendered page HTML.
+            # This works even when PDF is paywalled, and preserves full
+            # resolution without re-encoding through fitz.
+            if not _html_fig1_saved and _html_content and fig_save_path:
+                _dom_fig_cands = await _collect_dom_fig_candidates(page, real_url)
+                _fig_cands = _dom_fig_cands + _extract_html_fig_candidates(_html_content, real_url)
+                _deduped_fig_cands = []
+                _seen_fig_sources = set()
+                for _cand in sorted(_fig_cands, key=_score_html_figure_candidate, reverse=True):
+                    _sources = _figure_source_candidates(_cand)
+                    if not _sources or _sources[0] in _seen_fig_sources:
+                        continue
+                    _seen_fig_sources.add(_sources[0])
+                    _deduped_fig_cands.append(_cand)
+                _fig_cands = _deduped_fig_cands
+                for _fig_cand in _fig_cands[:4]:
+                    _ok, _saved, _source_url = await _try_download_html_fig1(
+                        page, context, _fig_cand, real_url, fig_save_path
+                    )
+                    if _ok:
+                        _html_fig1_saved = True
+                        result["figure_paths"] = [_saved]
+                        result["figure_items"] = [{
+                            "path":       _saved,
+                            "caption":    _fig_cand.get("caption", "Figure 1"),
+                            "source_url": _source_url,
+                        }]
+                        break
+
+            # ── Discover PDF / viewer URLs ────────────────────────────────────
+            if _direct_pdf_url:
+                pdf_url = _direct_pdf_url
+                viewer_url = ""
+            else:
+                _, pdf_url  = await _find_pdf_url(page)
+                viewer_url  = await _find_viewer_url(page)
 
             if not pdf_url and not viewer_url:
-                result["paywall_reason"] = "No PDF link found on page"
-                await _close_browser(browser)
+                if _html_fig1_saved:
+                    result["paywall_reason"] = "No PDF link found on page (Fig1 obtained from HTML)"
+                else:
+                    result["paywall_reason"] = "No PDF link found on page"
+                if _close_context:
+                    await _safe_close_handle(context)
+                else:
+                    await _safe_close_handle(browser)
                 return result
             if not pdf_url:
                 pdf_url = viewer_url
 
-            # ── Step 1: API direct fetch (fastest, works for OUP/Nature CDN) ──
+            # ── Step 1: API direct fetch ──────────────────────────────────────
             pdf_bytes = await _api_fetch(context, pdf_url, referer=real_url)
 
-            # ── Step 2: Browser navigate to PDF URL + on("response") capture ──
+            # ── Step 2: Browser navigate to PDF URL + response capture ────────
             if not pdf_bytes:
                 pdf_bytes = await _navigate_and_capture(
                     page, context, pdf_url, referer=real_url)
@@ -834,7 +1762,7 @@ async def _run_patchright_pipeline(
                     except Exception:
                         pass
 
-            # ── Step 3: Browser navigate to viewer (reader/epdf/showPdf) ──────
+            # ── Step 3: Browser navigate to viewer (epdf/showPdf) ────────────
             if not pdf_bytes and viewer_url:
                 pdf_bytes = await _navigate_and_capture(
                     page, context, viewer_url, referer=real_url)
@@ -846,20 +1774,30 @@ async def _run_patchright_pipeline(
                     if pw_reason:
                         result["paywall"]        = True
                         result["paywall_reason"] = pw_reason
-                        await _close_browser(browser)
+                        if _close_context:
+                            await _safe_close_handle(context)
+                        else:
+                            await _safe_close_handle(browser)
                         return result
-                result["paywall_reason"] = "PDF download failed (all steps)"
-                await _close_browser(browser)
+                if _html_fig1_saved:
+                    result["paywall_reason"] = "PDF download failed (Fig1 obtained from HTML)"
+                else:
+                    result["paywall_reason"] = "PDF download failed (all steps)"
+                if _close_context:
+                    await _safe_close_handle(context)
+                else:
+                    await _safe_close_handle(browser)
                 return result
 
-            await _close_browser(browser)
+            if _close_context:
+                await _safe_close_handle(context)
+            else:
+                await _safe_close_handle(browser)
 
-    finally:
-        if proc is not None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+    except Exception as _outer_exc:
+        if not result["paywall_reason"]:
+            result["paywall_reason"] = f"patchright error: {_outer_exc}"
+        return result
 
     if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
         result["paywall_reason"] = "Response is not a valid PDF"
@@ -881,8 +1819,11 @@ async def _run_patchright_pipeline(
         result["summary_mode"]     = "基于全文/PDF文本提取（patchright）"
         result["acquisition_path"] = "patchright Chrome CDP + PDF"
 
-    # ── Extract Fig1 ──────────────────────────────────────────────────────────
-    if fig_save_path:
+    # ── Extract Fig1 from PDF (fitz/PyMuPDF) ─────────────────────────────────
+    # Only run fitz extraction if the HTML CDN download did not already succeed.
+    # HTML CDN images are higher resolution and lossless; fitz rendering is the
+    # fallback for publishers that lazy-load figures or hide them behind auth.
+    if fig_save_path and not _html_fig1_saved:
         try:
             fig_save_path.parent.mkdir(parents=True, exist_ok=True)
             ok = extract_fig1_from_pdf_bytes(pdf_bytes, fig_save_path)
@@ -946,16 +1887,27 @@ def fetch_paper_pdf(
     if not url:
         return result
 
-    # Normalise plain DOI to URL
+    # Extract DOI before URL normalization so publisher-specific DOI
+    # shortcuts can avoid slow or challenge-prone doi.org redirects.
+    doi_plain = ""
+    m = re.search(r"(10\.\d{4,}/\S+)", doi_or_url)
+    if m:
+        doi_plain = m.group(1).rstrip(".,;)")
+
+    # Normalise Wiley DOI/DOI URL directly to the publisher page. run_reader.py
+    # calls this helper with a doi.org URL, so this must not be limited to bare DOI
+    # input; otherwise Wiley falls back to the slow doi.org/browser path.
+    if doi_plain.startswith(("10.1111/", "10.1002/")):
+        url = f"https://onlinelibrary.wiley.com/doi/{quote(doi_plain, safe='/')}"
+    elif doi_plain.startswith(("10.1186/", "10.1007/")):
+        url = f"https://link.springer.com/article/{quote(doi_plain, safe='/')}"
+
+    # Normalise plain DOI to URL.
     is_doi = bool(re.match(r"^10\.\d{4,}/", url))
     if is_doi and not url.startswith("http"):
         url = f"https://doi.org/{quote(url, safe='/')}"
 
     # ── Elsevier API path (text only, for 10.1016/ DOIs) ─────────────────────
-    doi_plain = ""
-    m = re.search(r"(10\.\d{4,}/\S+)", doi_or_url)
-    if m:
-        doi_plain = m.group(1).rstrip(".,;)")
 
     if elsevier_api_key and doi_plain.startswith("10.1016/"):
         xml = _elsevier_fetch_xml_via_curl(doi_plain, elsevier_api_key)
@@ -1019,8 +1971,6 @@ def fetch_paper_pdf(
         result["paywall_reason"] = patchright_result["paywall_reason"]
     elif patchright_result.get("paywall_reason"):
         result["paywall_reason"] = patchright_result["paywall_reason"]
-    if patchright_result.get("cookie_source"):
-        result["cookie_source"] = patchright_result["cookie_source"]
 
     # Use patchright full_text only if we don't already have better (Elsevier API) text
     if not result["full_text"] and patchright_result.get("full_text"):
@@ -1031,7 +1981,5 @@ def fetch_paper_pdf(
         # Elsevier API text + PDF obtained → upgrade description
         result["summary_mode"]     = "基于 Elsevier API 全文/XML + PDF（patchright）"
         result["acquisition_path"] = "Elsevier API(view=FULL) via curl + patchright PDF"
-    if result["acquisition_path"] and result["cookie_source"] == "temp_profile_no_cookies":
-        result["acquisition_path"] += "（no user cookies）"
 
     return result

@@ -23,7 +23,8 @@ if str(SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_DIR))
 
 from user_config import daily_papers_config, paper_notes_dir, temp_file_path
-from date_window import parse_date
+
+from pipeline_guard import PipelineGuardError, require_enriched_ready
 
 LABEL_MUST = "必读"
 LABEL_WORTH = "值得看"
@@ -187,16 +188,22 @@ def _build_split_table(sections: dict[str, list[dict]], note_cache: dict[int, st
 
 
 def _default_reason(paper: dict) -> str:
+    """Return an obvious TODO placeholder so the Agent cannot mistake it for final content."""
+    kws = display_keywords(paper)
+    kw_hint = "、".join(kws[:3]) if kws else "（未命中关键词）"
     return (
-        "TODO_AGENT_REWRITE_REASON: 基于标题、摘要、来源、关键词和分级，"
-        "改写为正式推荐理由；不要保留自动打分解释。"
+        f"TODO_AGENT 补写推荐理由｜命中词：{kw_hint}｜"
+        "要求：说清这篇真正值得或不值得看的原因，不要复述标题，不要写“命中关键词”。"
     )
 
 
 def _default_abstract_comment(paper: dict) -> str:
+    """Return an obvious TODO placeholder with abstract hint so the Agent can write a real comment."""
+    abstract = (paper.get("abstract") or "").strip()
+    abstract_hint = abstract[:400] if abstract else "（摘要未获取，请查阅 enriched JSON 或 PubMed 原文）"
     return (
-        "TODO_AGENT_REWRITE_ABSTRACT: 阅读摘要与富化信息后，改写为正式中文摘要短评；"
-        "必须交代对象、问题、数据/方法、核心结果和证据边界。"
+        f"TODO_AGENT 补写摘要短评｜摘要提示：{abstract_hint}｜"
+        "要求：自然语言讲清研究对象、核心问题、方法证据和结论边界，不要直接翻译摘要。"
     )
 
 
@@ -208,15 +215,16 @@ def _header_summary(primary: list[dict], low_signal: list[dict]) -> str:
         for kw in display_keywords(paper):
             kw_freq[kw] = kw_freq.get(kw, 0) + 1
     top_kws = sorted(kw_freq, key=lambda item: (-kw_freq[item], item))[:4]
-    parts = ["TODO_AGENT_REWRITE_REVIEW: 根据当天入选论文改写顶部推荐锐评。"]
+    parts = [f"本轮主列表共 {len(primary)} 篇。"]
     if top_kws:
-        parts.append(f"候选高频主题提示：{SEP.join(top_kws)}。")
+        parts.append(f"高频主题集中在 {SEP.join(top_kws)}。")
     must_count = len(classify_sections(primary)[LABEL_MUST])
-    parts.append(f"自动分桶提示：必读 {must_count} 篇。")
+    parts.append(f"当前自动分桶得到 {must_count} 篇必读。")
     if len(primary) < 3:
-        parts.append("候选数量偏少，需要判断是否扩大时间窗口。")
+        parts.append("今天主题信号偏弱，建议扩大时间窗口后再看。")
     if low_signal:
-        parts.append(f"低信号候选提示：{len(low_signal)} 篇。")
+        parts.append(f"另有 {len(low_signal)} 篇低信号候选被降到附录或隐藏。")
+    parts.append("以下内容仍是结构化草稿，需在阅读题目、摘要和上下文后补写最终锐评。")
     return "".join(parts)
 
 
@@ -306,15 +314,25 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("input_json")
     parser.add_argument("--date", default=date.today().isoformat())
+    parser.add_argument("--days", type=int)
     parser.add_argument("--output")
     args = parser.parse_args()
 
     input_path = Path(args.input_json)
-    papers = json.loads(input_path.read_text(encoding="utf-8-sig"))
-    report_date = parse_date(args.date).isoformat()
-    output_path = Path(args.output) if args.output else temp_file_path(f"{report_date}-{DRAFT_SUFFIX}")
+    try:
+        papers = require_enriched_ready(
+            enriched_path=input_path,
+            top30_path=temp_file_path("daily_papers_top30.json"),
+            status_path=temp_file_path("daily_papers_fetch_status.json"),
+            expected_date=args.date,
+            expected_days=args.days,
+        )
+    except PipelineGuardError as exc:
+        print(f"[build_review] refusing stale or failed pipeline input: {exc}", file=sys.stderr)
+        return 2
+    output_path = Path(args.output) if args.output else temp_file_path(f"{args.date}-{DRAFT_SUFFIX}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(build_markdown(papers, report_date), encoding="utf-8-sig")
+    output_path.write_text(build_markdown(papers, args.date), encoding="utf-8-sig")
     print(json.dumps({"draft_path": str(output_path), "paper_count": len(papers)}, ensure_ascii=False))
     return 0
 

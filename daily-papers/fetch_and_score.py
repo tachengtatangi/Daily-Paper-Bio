@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 fetch_and_score.py - Phase 1+2: Fetch, score, dedup, select top papers from PubMed.
 
@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
+from http.client import IncompleteRead
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
@@ -94,6 +95,7 @@ PUBMED_FETCH_STATS = {
     "supplemental_fetched_id_count": 0,
     "after_scoring": 0,
 }
+SOURCE_FETCH_ERRORS: list[dict] = []
 
 DAILYPAPERS_DIR = daily_papers_dir()
 HISTORY_PATH = DAILYPAPERS_DIR / ".history.json"
@@ -169,7 +171,6 @@ def _add_ncbi_key(params: dict) -> dict:
 BIORXIV_DETAILS_BASE = "https://api.biorxiv.org/details/biorxiv"
 USER_AGENT = "daily-papers-pubmed/1.0"
 FETCH_BATCH_SIZE = 100
-PUBMED_ESEARCH_UID_LIMIT = 9999
 BIORXIV_ENABLED = bool(_CONFIG.get("biorxiv_enabled", True))
 BIORXIV_RETMAX = int(_CONFIG.get("biorxiv_retmax", 300))
 _biorxiv_cap_raw = _CONFIG.get("biorxiv_retmax_total_cap", 3000)
@@ -200,8 +201,8 @@ FORMULA_RESIDUE_RE = re.compile(r"\[\s*formula:\s*see\s*text\s*\]|\bformula:\s*s
 CTRL_RESIDUE_RE = re.compile(r"[\uFFFD\u200B-\u200D\u2060]+")
 
 # Keyword variant aliases are config-driven. normalize_token covers common
-# plural and hyphen/space variants; keyword_variants covers semantic aliases
-# such as transcriptome/transcriptomics or convergent/convergence phrasing.
+# plural and hyphen/space variants; keyword_variants in user-config covers
+# semantic aliases such as transcriptome/transcriptomics or convergent/convergence.
 CANONICAL_VARIANTS: dict[str, list[str]] = {}
 
 
@@ -233,34 +234,7 @@ def clean_display_text(text: str) -> str:
 def reset_filter_audit() -> None:
     for key in FILTER_AUDIT:
         FILTER_AUDIT[key] = []
-
-
-def normalize_keyword_variant_map(configured: object, known_terms: list[str]) -> dict[str, list[str]]:
-    """Build a lookup keyed by every configured keyword/boost/negative term."""
-    raw = configured if isinstance(configured, dict) else {}
-    lookup: dict[str, list[str]] = {}
-    known_by_norm = {
-        str(term).strip().lower(): str(term).strip()
-        for term in known_terms
-        if str(term).strip()
-    }
-    for canonical_raw, aliases_raw in raw.items():
-        canonical = re.sub(r"\s+", " ", str(canonical_raw or "")).strip()
-        if not canonical:
-            continue
-        aliases = aliases_raw if isinstance(aliases_raw, list) else [aliases_raw]
-        variants = unique_keep_case([canonical] + [str(item or "") for item in aliases])
-        if not variants:
-            continue
-        keys = {canonical, known_by_norm.get(canonical.lower(), canonical)}
-        for alias in variants:
-            keys.add(alias)
-            if alias.lower() in known_by_norm:
-                keys.add(known_by_norm[alias.lower()])
-        for key in keys:
-            if key:
-                lookup[key] = variants
-    return lookup
+    SOURCE_FETCH_ERRORS.clear()
 
 
 # Lock protecting all writes to FILTER_AUDIT (parse_pubmed_xml runs in parallel).
@@ -290,7 +264,63 @@ def record_filter_event(bucket: str, paper: dict, details: dict | None = None) -
 
 
 def filter_audit_snapshot() -> dict:
-    return {key: list(value) for key, value in FILTER_AUDIT.items()}
+    snapshot = {key: list(value) for key, value in FILTER_AUDIT.items()}
+    snapshot["_source_fetch_errors"] = list(SOURCE_FETCH_ERRORS)
+    snapshot["_pubmed_stats"] = dict(PUBMED_FETCH_STATS)
+    snapshot["_biorxiv_stats"] = dict(BIORXIV_FETCH_STATS)
+    return snapshot
+
+
+def _summarize_source_fetch_errors(limit: int = 3) -> str:
+    if not SOURCE_FETCH_ERRORS:
+        return ""
+    parts = []
+    for item in SOURCE_FETCH_ERRORS[:limit]:
+        url = str(item.get("url", ""))
+        if len(url) > 180:
+            url = url[:177] + "..."
+        parts.append(f"{item.get('kind', 'error')} {url}: {item.get('error', '')}")
+    extra = len(SOURCE_FETCH_ERRORS) - limit
+    if extra > 0:
+        parts.append(f"... and {extra} more")
+    return "; ".join(parts)
+
+
+def raise_if_fetch_failed_without_candidates(candidates: list[dict], stage: str = "fetch") -> None:
+    if candidates or not SOURCE_FETCH_ERRORS:
+        return
+    summary = _summarize_source_fetch_errors()
+    raise RuntimeError(
+        f"[daily-papers] {stage} produced zero candidates because external source requests failed; "
+        f"refusing to continue with an empty report. {summary}"
+    )
+
+def normalize_keyword_variant_map(configured: object, known_terms: list[str]) -> dict[str, list[str]]:
+    """Build a lookup keyed by every configured keyword/boost/negative term."""
+    raw = configured if isinstance(configured, dict) else {}
+    lookup: dict[str, list[str]] = {}
+    known_by_norm = {
+        str(term).strip().lower(): str(term).strip()
+        for term in known_terms
+        if str(term).strip()
+    }
+    for canonical_raw, aliases_raw in raw.items():
+        canonical = re.sub(r"\s+", " ", str(canonical_raw or "")).strip()
+        if not canonical:
+            continue
+        aliases = aliases_raw if isinstance(aliases_raw, list) else [aliases_raw]
+        variants = unique_keep_case([canonical] + [str(item or "") for item in aliases])
+        if not variants:
+            continue
+        keys = {canonical, known_by_norm.get(canonical.lower(), canonical)}
+        for alias in variants:
+            keys.add(alias)
+            if alias.lower() in known_by_norm:
+                keys.add(known_by_norm[alias.lower()])
+        for key in keys:
+            if key:
+                lookup[key] = variants
+    return lookup
 
 
 def apply_library_profile(refresh: bool = False) -> dict:
@@ -524,21 +554,27 @@ def score_paper(paper: dict) -> int:
         record_filter_event("rejected_negative_keyword", paper, {"negative_hits": negative_hits})
         return -999
 
-    score = len(title_matches) * 3 + len(abstract_matches) * 1
+    base_score = len(title_matches) * 3 + len(abstract_matches) * 1
 
     domain_hits = len(domain_matches)
+    boost = 0
     if domain_hits >= 2:
-        score += 2
+        boost += 2
     elif domain_hits == 1:
-        score += 1
-
+        boost += 1
     if domain_title_matches:
-        score += 1
+        boost += 1
 
-    return score
+    # When domain_boost_can_admit=False (default), boost only applies if the paper
+    # already has at least one primary keyword hit.  A paper with zero keyword matches
+    # must not be admitted solely because of domain-boost terms.
+    if DOMAIN_BOOST_CAN_ADMIT or base_score > 0:
+        base_score += boost
+
+    return base_score
 
 
-def fetch_text_with_meta(url: str, timeout: int = 60, retries: int = 3, backoff_base: float = 2.0) -> tuple[str, str]:
+def fetch_text_with_meta(url: str, timeout: int = 60, retries: int = 3, backoff_base: float = 2.0, record_error: bool = True) -> tuple[str, str]:
     last_exc = None
     last_kind = "error"
     for attempt in range(retries):
@@ -553,6 +589,9 @@ def fetch_text_with_meta(url: str, timeout: int = 60, retries: int = 3, backoff_
                 break
             if exc.code < 500 and exc.code != 429:
                 break
+        except IncompleteRead as exc:
+            last_exc = exc
+            last_kind = "incompleteread"
         except TimeoutError as exc:
             last_exc = exc
             last_kind = "timeout"
@@ -575,12 +614,18 @@ def fetch_text_with_meta(url: str, timeout: int = 60, retries: int = 3, backoff_
             break
         if attempt < retries - 1:
             time.sleep(backoff_base * (attempt + 1))
-    print(f"  [WARN] fetch failed {url}: {last_exc}", file=sys.stderr)
+    if record_error:
+        SOURCE_FETCH_ERRORS.append({
+            "url": url,
+            "kind": last_kind,
+            "error": str(last_exc),
+        })
+        print(f"  [WARN] fetch failed {url}: {last_exc}", file=sys.stderr)
     return "", last_kind
 
 
-def fetch_text(url: str, timeout: int = 60) -> str:
-    raw, _kind = fetch_text_with_meta(url, timeout=timeout)
+def fetch_text(url: str, timeout: int = 60, record_error: bool = True) -> str:
+    raw, _kind = fetch_text_with_meta(url, timeout=timeout, record_error=record_error)
     return raw
 
 
@@ -615,7 +660,11 @@ def build_pubmed_query() -> str:
     return "journal article[pt] AND hasabstract[text]"
 
 
+PUBMED_ESEARCH_UID_LIMIT = 9999
+
+
 def pubmed_keyword_variants(keyword: str) -> list[str]:
+    """Expand a single keyword using CANONICAL_VARIANTS + basic plural logic."""
     clean = re.sub(r"\s+", " ", str(keyword or "")).strip()
     if not clean:
         return []
@@ -637,6 +686,7 @@ def pubmed_keyword_variants(keyword: str) -> list[str]:
 
 
 def pubmed_keyword_terms(keywords: list[str]) -> list[str]:
+    """Return PubMed [tiab] search terms for all keywords with variants."""
     terms: list[str] = []
     for kw in unique_keep_case(keywords):
         for variant in pubmed_keyword_variants(kw):
@@ -648,16 +698,11 @@ def pubmed_keyword_terms(keywords: list[str]) -> list[str]:
     return unique_keep_case(terms)
 
 
-def pubmed_keyword_term(keywords: list[str]) -> str:
-    return " OR ".join(pubmed_keyword_terms(keywords))
-
-
 def build_pubmed_supplemental_queries(max_chars: int = 1400) -> list[str]:
-    """Build short PubMed supplemental queries to avoid HTTP 414.
+    """Build chunked PubMed supplemental keyword queries to avoid HTTP 414.
 
-    E-utilities GET URLs can fail once a large variant-expanded OR clause is
-    encoded.  Keep each query comfortably short; duplicate PMIDs are deduped by
-    callers after all chunks are searched.
+    E-utilities GET URLs fail once the OR clause becomes too long.  Keep each
+    query short; duplicate PMIDs are deduped by callers after all chunks.
     """
     terms = pubmed_keyword_terms(KEYWORDS)
     if not terms:
@@ -680,12 +725,7 @@ def build_pubmed_supplemental_queries(max_chars: int = 1400) -> list[str]:
 
 
 def iter_month_bounds(start_date: date, end_date: date):
-    """Yield month-aligned date ranges overlapping a requested PubMed window.
-
-    PubMed [pdat] can be month-granular even when ArticleDate has a precise day.
-    The broad daily pool stays day-scoped for cost control; keyword supplemental
-    searches use these month windows so high-signal papers are not missed.
-    """
+    """Yield month-aligned date ranges overlapping the requested window."""
     current = date(start_date.year, start_date.month, 1)
     while current <= end_date:
         if current.month == 12:
@@ -697,34 +737,8 @@ def iter_month_bounds(start_date: date, end_date: date):
         current = next_month
 
 
-def esearch_pubmed_monthly_supplement(start_date: date, end_date: date, retmax: int) -> list[str]:
-    supplemental_queries = build_pubmed_supplemental_queries()
-    if not supplemental_queries:
-        return []
-    all_ids: list[str] = []
-    seen: set[str] = set()
-    total_count = 0
-    for month_start, month_end in iter_month_bounds(start_date, end_date):
-        for supplemental_query in supplemental_queries:
-            extra_ids, extra_count = esearch_pubmed_query(supplemental_query, month_start, month_end, retmax)
-            total_count += extra_count
-            for pmid in extra_ids:
-                if pmid in seen:
-                    continue
-                seen.add(pmid)
-                all_ids.append(pmid)
-    PUBMED_FETCH_STATS["supplemental_query"] = f"{len(supplemental_queries)} chunked keyword queries"
-    PUBMED_FETCH_STATS["supplemental_esearch_count"] = total_count
-    PUBMED_FETCH_STATS["supplemental_fetched_id_count"] = len(all_ids)
-    print(
-        f"  PubMed month-expanded supplemental keyword esearch returned {total_count} IDs, "
-        f"fetched {len(all_ids)} unique IDs",
-        file=sys.stderr,
-    )
-    return all_ids
-
-
 def esearch_pubmed_query(query: str, start_date, end_date, retmax: int) -> tuple[list[str], int]:
+    """Execute a single PubMed esearch query and return (ids, total_count)."""
     base_params = _add_ncbi_key({
         "db": "pubmed",
         "term": query,
@@ -734,9 +748,7 @@ def esearch_pubmed_query(query: str, start_date, end_date, retmax: int) -> tuple
         "sort": "pub date",
         "retmode": "json",
     })
-
-    probe_params = dict(base_params)
-    probe_params["retmax"] = "0"
+    probe_params = dict(base_params, retmax="0")
     probe_url = f"{PUBMED_SEARCH_BASE}?{urlencode(probe_params)}"
     _ncbi_sleep()
     raw = fetch_text(probe_url)
@@ -744,25 +756,21 @@ def esearch_pubmed_query(query: str, start_date, end_date, retmax: int) -> tuple
         return [], 0
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        print(f"  [WARN] esearch JSON parse error: {exc}", file=sys.stderr)
+    except json.JSONDecodeError:
         return [], 0
-
     count = int(data.get("esearchresult", {}).get("count", 0))
     if count <= 0:
-        print("  PubMed esearch returned 0 IDs", file=sys.stderr)
-        return [], count
-
+        return [], 0
     target = count if retmax <= 0 else min(count, retmax)
     if target > PUBMED_ESEARCH_UID_LIMIT:
         print(
-            f"  [WARN] PubMed ESearch UID retrieval is capped at {PUBMED_ESEARCH_UID_LIMIT}; "
-            "use smaller date windows or per-day fetch to avoid truncation.",
+            f"  [WARN] PubMed esearch returned {count} IDs (capped to {PUBMED_ESEARCH_UID_LIMIT}). "
+            "Consider using smaller date windows or per-day fetch to avoid truncation.",
             file=sys.stderr,
         )
         target = PUBMED_ESEARCH_UID_LIMIT
     ids: list[str] = []
-    step = 10000
+    step = min(10000, PUBMED_ESEARCH_UID_LIMIT)
     for retstart in range(0, target, step):
         page_params = dict(base_params)
         page_params["retstart"] = str(retstart)
@@ -774,12 +782,30 @@ def esearch_pubmed_query(query: str, start_date, end_date, retmax: int) -> tuple
             continue
         try:
             page_data = json.loads(page_raw)
-        except json.JSONDecodeError as exc:
-            print(f"  [WARN] esearch page JSON parse error at {retstart}: {exc}", file=sys.stderr)
+        except json.JSONDecodeError:
             continue
         ids.extend(page_data.get("esearchresult", {}).get("idlist", []))
-
     return ids, count
+
+
+def esearch_pubmed_monthly_supplement(start_date: date, end_date: date, retmax: int) -> list[str]:
+    """Keyword-targeted supplemental search using month-aligned windows.
+
+    PubMed pdat can be month-granular; using monthly windows for keyword
+    supplemental queries avoids missing high-signal papers at month edges.
+    """
+    supplemental_queries = build_pubmed_supplemental_queries()
+    if not supplemental_queries:
+        return []
+    all_ids: list[str] = []
+    for month_start, month_end in iter_month_bounds(start_date, end_date):
+        for supp_query in supplemental_queries:
+            extra_ids, extra_count = esearch_pubmed_query(supp_query, month_start, month_end, retmax)
+            all_ids.extend(extra_ids)
+            if extra_count > 0:
+                PUBMED_FETCH_STATS["supplemental_esearch_count"] += extra_count
+    PUBMED_FETCH_STATS["supplemental_fetched_id_count"] += len(all_ids)
+    return unique_keep_case(all_ids)
 
 
 def esearch_pubmed(start_date, end_date, retmax: int) -> list[str]:
@@ -794,26 +820,14 @@ def esearch_pubmed(start_date, end_date, retmax: int) -> list[str]:
         "supplemental_fetched_id_count": 0,
         "after_scoring": 0,
     })
+
     ids, count = esearch_pubmed_query(query, start_date, end_date, retmax)
     PUBMED_FETCH_STATS["esearch_count"] = count
     PUBMED_FETCH_STATS["fetched_id_count"] = len(ids)
+    if count <= 0:
+        print("  PubMed esearch returned 0 IDs", file=sys.stderr)
+        return []
     print(f"  PubMed esearch returned {count} IDs, fetched {len(ids)} IDs", file=sys.stderr)
-
-    if retmax > 0 and count > retmax and KEYWORDS:
-        supplemental_queries = build_pubmed_supplemental_queries()
-        for supplemental_query in supplemental_queries:
-            extra_ids, extra_count = esearch_pubmed_query(supplemental_query, start_date, end_date, retmax)
-            PUBMED_FETCH_STATS["supplemental_esearch_count"] += extra_count
-            PUBMED_FETCH_STATS["supplemental_fetched_id_count"] += len(extra_ids)
-            before = len(ids)
-            ids = list(dict.fromkeys(ids + extra_ids))
-            print(
-                f"  PubMed supplemental keyword esearch returned {extra_count} IDs, "
-                f"added {len(ids) - before} unique IDs beyond broad cap",
-                file=sys.stderr,
-            )
-        if supplemental_queries:
-            PUBMED_FETCH_STATS["supplemental_query"] = f"{len(supplemental_queries)} chunked keyword queries"
     return ids
 
 
@@ -824,84 +838,6 @@ def chunked(seq: list[str], size: int):
 
 def text_or_empty(node) -> str:
     return node.text.strip() if node is not None and node.text else ""
-
-
-MONTH_LOOKUP = {
-    "jan": 1, "january": 1,
-    "feb": 2, "february": 2,
-    "mar": 3, "march": 3,
-    "apr": 4, "april": 4,
-    "may": 5,
-    "jun": 6, "june": 6,
-    "jul": 7, "july": 7,
-    "aug": 8, "august": 8,
-    "sep": 9, "sept": 9, "september": 9,
-    "oct": 10, "october": 10,
-    "nov": 11, "november": 11,
-    "dec": 12, "december": 12,
-}
-
-
-def format_pubmed_date(year: str, month: str = "", day: str = "") -> str:
-    year = str(year or "").strip()
-    month = str(month or "").strip()
-    day = str(day or "").strip()
-    if not year.isdigit():
-        return ""
-    parts = [f"{int(year):04d}"]
-    if month:
-        if month.isdigit():
-            month_num = int(month)
-        else:
-            month_num = MONTH_LOOKUP.get(month.lower()[:3], 0)
-        if month_num:
-            parts.append(f"{month_num:02d}")
-    if day and day.isdigit():
-        parts.append(f"{int(day):02d}")
-    return "-".join(parts)
-
-
-def paper_date_overlaps_window(date_text: str, start_date: date, end_date: date) -> bool:
-    text = str(date_text or "").strip()
-    if not text:
-        return True
-    match = re.match(r"^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$", text)
-    if not match:
-        return True
-    year = int(match.group(1))
-    month = int(match.group(2) or 1)
-    day = int(match.group(3) or 1)
-    if match.group(3):
-        try:
-            resolved = date(year, month, day)
-        except ValueError:
-            return True
-        return start_date <= resolved <= end_date
-    if match.group(2):
-        month_start = date(year, month, 1)
-        if month == 12:
-            month_end = date(year + 1, 1, 1) - timedelta(days=1)
-        else:
-            month_end = date(year, month + 1, 1) - timedelta(days=1)
-        return month_start <= end_date and month_end >= start_date
-    year_start = date(year, 1, 1)
-    year_end = date(year, 12, 31)
-    return year_start <= end_date and year_end >= start_date
-
-
-def apply_pubmed_date_window(paper: dict, start_date: date, end_date: date) -> bool:
-    """Filter by PubMed's primary display date.
-
-    PubMed pages display the journal/issue date first, followed by Epub when it
-    exists, e.g. "2025 Aug 26; ... Epub 2025 Aug 7". For user-facing date
-    windows, that first display date is the right semantic anchor. Fall back to
-    Epub/Entrez only when no journal/issue date is available.
-    """
-    date_for_window = str(paper.get("date_for_window") or paper.get("date", "")).strip()
-    if not date_for_window:
-        return True
-    paper["date"] = date_for_window
-    return paper_date_overlaps_window(date_for_window, start_date, end_date)
 
 
 def normalize_journal_for_lookup(journal: str) -> list[str]:
@@ -944,12 +880,9 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
         return []
 
     # Build prefilter term list once per batch (not once per article).
-    # By default, only primary KEYWORDS admit papers. Boost terms score papers
-    # after admission; they do not let broad words such as "mammal" through by
-    # themselves unless domain_boost_can_admit=true.
-    _prefilter_terms = list(KEYWORDS)
-    if DOMAIN_BOOST_CAN_ADMIT or not _prefilter_terms:
-        _prefilter_terms += DOMAIN_BOOST_KEYWORDS
+    # KEYWORDS + DOMAIN_BOOST_KEYWORDS are read-only after initialisation,
+    # so this is safe to compute outside the loop even under parallel efetch.
+    _prefilter_terms = KEYWORDS + DOMAIN_BOOST_KEYWORDS
 
     papers = []
     for article in root.findall("PubmedArticle"):
@@ -990,13 +923,11 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
             cas_info = lookup_journal(variant) or {}
             if cas_info:
                 break
-        q_value = None
-        if cas_info:
-            try:
-                q_value = int(cas_info.get("quartile", 99))
-            except (TypeError, ValueError):
-                q_value = None
-        if (q_value is None and REJECT_UNKNOWN_QUARTILE) or (q_value is not None and q_value > MIN_QUARTILE):
+        try:
+            q_value = int(cas_info.get("quartile", 99)) if cas_info else 99
+        except (TypeError, ValueError):
+            q_value = 99
+        if q_value > MIN_QUARTILE:
             record_filter_event(
                 "rejected_quartile",
                 {
@@ -1008,20 +939,9 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
                     "source": "pubmed",
                     "url": f"{PUBMED_UI_BASE}/{pmid}/",
                 },
-                {"quartile": q_value if q_value is not None else "unknown", "min_quartile": MIN_QUARTILE},
+                {"quartile": q_value, "min_quartile": MIN_QUARTILE},
             )
             continue
-
-        keywords = []
-        for kw in medline.findall("KeywordList/Keyword"):
-            kw_text = "".join(kw.itertext()).strip()
-            if kw_text:
-                keywords.append(kw_text)
-        if not keywords:
-            for mesh in medline.findall("MeshHeadingList/MeshHeading/DescriptorName")[:8]:
-                mesh_text = "".join(mesh.itertext()).strip()
-                if mesh_text:
-                    keywords.append(mesh_text)
 
         # ── Keyword pre-filter ────────────────────────────────────────────────
         # Fast gate analogous to the original skill's category-then-score design:
@@ -1035,8 +955,7 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
         if _prefilter_terms:
             title_tokens = text_to_norm_tokens(title)
             abstract_tokens = text_to_norm_tokens(abstract)
-            keyword_tokens = text_to_norm_tokens(" ".join(keywords))
-            all_tokens = title_tokens + abstract_tokens + keyword_tokens
+            all_tokens = title_tokens + abstract_tokens
             if not any(
                 contains_keyword_variant(all_tokens, kw)
                 for kw in _prefilter_terms
@@ -1093,9 +1012,12 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
             day = text_or_empty(pubdate_node.find("Day"))
             journal_pub_date = format_pubmed_date(year, month, day)
 
-        # Match PubMed's visible order: issue/journal date first, then Epub.
-        pub_date = journal_pub_date or epub_date or entrez_date
-        date_for_window = journal_pub_date or epub_date or entrez_date
+        # Epub date is used first: it reflects when the paper became available online,
+        # which is what matters for "show me today's new papers". Journal publication
+        # date can lag epub by weeks or months (e.g. a paper epub 2025-02-28 that
+        # appears in a March issue would otherwise be missed in a Feb date window).
+        pub_date = epub_date or journal_pub_date or entrez_date
+        date_for_window = epub_date or journal_pub_date or entrez_date
         date_candidates = unique_keep_case([epub_date, entrez_date, journal_pub_date])
 
         doi = ""
@@ -1107,6 +1029,17 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
                     doi = text_or_empty(article_id)
                 elif id_type == "pmc" and not pmc_id:
                     pmc_id = text_or_empty(article_id)
+
+        keywords = []
+        for kw in medline.findall("KeywordList/Keyword"):
+            kw_text = "".join(kw.itertext()).strip()
+            if kw_text:
+                keywords.append(kw_text)
+        if not keywords:
+            for mesh in medline.findall("MeshHeadingList/MeshHeading/DescriptorName")[:8]:
+                mesh_text = "".join(mesh.itertext()).strip()
+                if mesh_text:
+                    keywords.append(mesh_text)
 
         url = f"{PUBMED_UI_BASE}/{pmid}/"
         pdf = f"https://doi.org/{doi}" if doi else ""
@@ -1128,7 +1061,7 @@ def parse_pubmed_xml(xml_text: str) -> list[dict]:
             "doi": doi,
             "pmc_id": pmc_id,
             "journal": journal,
-            "cas_quartile": cas_info.get("quartile", "") if cas_info else "",
+            "cas_quartile": cas_info.get("quartile", ""),
             "cas_top": cas_info.get("top", ""),
             "keywords": keywords,
             "matched_keywords": collect_keyword_matches(
@@ -1370,73 +1303,99 @@ def fetch_biorxiv_papers(start_date, end_date, days: int = 1) -> list[dict]:
     return papers
 
 
+def format_pubmed_date(year: str, month: str = "", day: str = "") -> str:
+    """Return a normalized date string from PubMed year/month/day fields.
+
+    Converts 3-letter month abbreviations (Jan, Feb, …) to zero-padded numbers.
+    Returns YYYY-MM-DD when all parts are present, YYYY-MM when day is absent,
+    and YYYY when only year is available.
+    """
+    MONTH_MAP = {
+        "jan": "01", "feb": "02", "mar": "03", "apr": "04",
+        "may": "05", "jun": "06", "jul": "07", "aug": "08",
+        "sep": "09", "oct": "10", "nov": "11", "dec": "12",
+    }
+    y = str(year or "").strip()
+    m = str(month or "").strip()
+    d = str(day or "").strip()
+    if not y:
+        return ""
+    if m:
+        m = MONTH_MAP.get(m.lower(), m.zfill(2))
+    parts = [p for p in [y, m, d] if p]
+    return "-".join(parts)
+
+
+def paper_date_overlaps_window(date_text: str, start_date: date, end_date: date) -> bool:
+    """Return True if date_text falls within [start_date, end_date]."""
+    text = str(date_text or "").strip()
+    if not text:
+        return True  # no date info → include by default
+    parts = text.split("-")
+    try:
+        year = int(parts[0]) if len(parts) >= 1 else 0
+        month = int(parts[1]) if len(parts) >= 2 else 0
+        day_val = int(parts[2]) if len(parts) >= 3 else 0
+        if not year:
+            return True
+        if month and day_val:
+            resolved = date(year, month, day_val)
+            return start_date <= resolved <= end_date
+        if month:
+            month_start = date(year, month, 1)
+            if month == 12:
+                month_end = date(year + 1, 1, 1) - timedelta(days=1)
+            else:
+                month_end = date(year, month + 1, 1) - timedelta(days=1)
+            return month_start <= end_date and month_end >= start_date
+        year_start = date(year, 1, 1)
+        year_end = date(year, 12, 31)
+        return year_start <= end_date and year_end >= start_date
+    except (ValueError, TypeError):
+        return True
+
+
+def apply_pubmed_date_window(paper: dict, start_date: date, end_date: date) -> bool:
+    """Filter by PubMed's primary display date.
+
+    PubMed pages display the journal/issue date first, followed by Epub when it
+    exists, e.g. "2025 Aug 26; ... Epub 2025 Aug 7".  For user-facing date
+    windows, that first display date is the right semantic anchor.  Fall back to
+    Epub/Entrez only when no journal/issue date is available.
+    """
+    date_for_window = str(paper.get("date_for_window") or paper.get("date", "")).strip()
+    if not date_for_window:
+        return True
+    paper["date"] = date_for_window
+    return paper_date_overlaps_window(date_for_window, start_date, end_date)
+
+
 def fetch_pubmed_papers(start_date, end_date, days: int = 1) -> list[dict]:
     # Scale retmax linearly with days (mirrors original skill's 400*days approach).
     # search_retmax is treated as a per-day budget; 0 means unlimited.
     # search_retmax_total_cap applies a hard ceiling (0 = no cap), preventing
     # runaway multi-day queries (e.g. 7 days × 5000 = 35 000 without a cap).
-    if max(1, days) > 1 and SEARCH_RETMAX > 0:
-        effective_retmax = SEARCH_RETMAX
-        total_budget = SEARCH_RETMAX * max(1, days)
-        if SEARCH_RETMAX_TOTAL_CAP > 0:
-            total_budget = min(total_budget, SEARCH_RETMAX_TOTAL_CAP)
-        print(
-            f"  PubMed retmax: {SEARCH_RETMAX}/day × {days} day(s) = {total_budget}; "
-            "fetching per day to avoid PubMed 9999-ID page limit",
-            file=sys.stderr,
-        )
-    else:
-        effective_retmax = (SEARCH_RETMAX * max(1, days)) if SEARCH_RETMAX > 0 else 0
-    if max(1, days) <= 1 and SEARCH_RETMAX_TOTAL_CAP > 0 and effective_retmax > SEARCH_RETMAX_TOTAL_CAP:
+    effective_retmax = (SEARCH_RETMAX * max(1, days)) if SEARCH_RETMAX > 0 else 0
+    if SEARCH_RETMAX_TOTAL_CAP > 0 and effective_retmax > SEARCH_RETMAX_TOTAL_CAP:
         effective_retmax = SEARCH_RETMAX_TOTAL_CAP
         print(
             f"  PubMed retmax capped: {SEARCH_RETMAX}/day × {days} day(s) → capped at {SEARCH_RETMAX_TOTAL_CAP} (search_retmax_total_cap)",
             file=sys.stderr,
         )
-    elif max(1, days) <= 1:
+    else:
         print(
             f"  PubMed retmax: {SEARCH_RETMAX}/day × {days} day(s) = {effective_retmax or 'unlimited'}",
             file=sys.stderr,
         )
-    if max(1, days) > 1 and SEARCH_RETMAX > 0:
-        ids = []
-        seen_ids: set[str] = set()
-        current = start_date
-        fetched_days = 0
-        while current <= end_date:
-            if SEARCH_RETMAX_TOTAL_CAP > 0 and len(ids) >= SEARCH_RETMAX_TOTAL_CAP:
-                print(
-                    f"  PubMed total cap reached: {len(ids)} IDs >= {SEARCH_RETMAX_TOTAL_CAP}",
-                    file=sys.stderr,
-                )
-                break
-            day_ids = esearch_pubmed(current, current, effective_retmax)
-            fetched_days += 1
-            added = 0
-            for pmid in day_ids:
-                if pmid in seen_ids:
-                    continue
-                seen_ids.add(pmid)
-                ids.append(pmid)
-                added += 1
-                if SEARCH_RETMAX_TOTAL_CAP > 0 and len(ids) >= SEARCH_RETMAX_TOTAL_CAP:
-                    break
-            print(f"  PubMed {current.isoformat()}: added {added} unique IDs", file=sys.stderr)
-            current += timedelta(days=1)
-        print(f"  PubMed per-day esearch complete: {fetched_days} day(s), {len(ids)} unique IDs", file=sys.stderr)
-    else:
-        ids = esearch_pubmed(start_date, end_date, effective_retmax)
-
-    if SEARCH_RETMAX > 0 and KEYWORDS:
-        supplemental_cap = min(max(SEARCH_RETMAX, 1000), PUBMED_ESEARCH_UID_LIMIT)
-        extra_ids = esearch_pubmed_monthly_supplement(start_date, end_date, supplemental_cap)
-        if extra_ids:
-            before = len(ids)
-            ids = list(dict.fromkeys(ids + extra_ids))
-            print(
-                f"  PubMed month-expanded supplemental added {len(ids) - before} unique IDs beyond day-window pool",
-                file=sys.stderr,
-            )
+    ids = esearch_pubmed(start_date, end_date, effective_retmax)
+    supplemental_cap = min(effective_retmax // 2 if effective_retmax > 0 else 5000, 5000)
+    extra_ids = esearch_pubmed_monthly_supplement(start_date, end_date, supplemental_cap)
+    if extra_ids:
+        combined = unique_keep_case(ids + extra_ids)
+        new_count = len(combined) - len(ids)
+        if new_count > 0:
+            print(f"  PubMed supplemental search added {new_count} new IDs", file=sys.stderr)
+        ids = combined
     batches = list(chunked(ids, FETCH_BATCH_SIZE))
     n_batches = len(batches)
     print(
@@ -1446,7 +1405,7 @@ def fetch_pubmed_papers(start_date, end_date, days: int = 1) -> list[dict]:
     )
 
     # ── Per-batch fetch helper ────────────────────────────────────────────────
-    def _fetch_batch(batch: list[str], depth: int = 0) -> list[dict]:
+    def _fetch_batch(batch: list[str]) -> list[dict]:
         params = _add_ncbi_key({
             "db": "pubmed",
             "id": ",".join(batch),
@@ -1454,16 +1413,24 @@ def fetch_pubmed_papers(start_date, end_date, days: int = 1) -> list[dict]:
         })
         url = f"{PUBMED_FETCH_BASE}?{urlencode(params)}"
         _NCBI_RATE_LIMITER.acquire()          # thread-safe slot reservation
-        xml_text, kind = fetch_text_with_meta(url)
-        if not xml_text and len(batch) > 1:
-            mid = len(batch) // 2
+        xml_text, kind = fetch_text_with_meta(url, record_error=False)
+        if xml_text:
+            return parse_pubmed_xml(xml_text)     # parse_pubmed_xml is thread-safe
+                                                  # (record_filter_event uses _FILTER_AUDIT_LOCK)
+        if kind in {"incompleteread", "timeout", "oserror"} and len(batch) > 1:
+            mid = max(1, len(batch) // 2)
             print(
-                f"  [WARN] efetch batch returned {kind}; retrying as {len(batch[:mid])}+{len(batch[mid:])} split",
+                f"  [WARN] efetch {kind}; retrying split batch {len(batch)} -> {mid}+{len(batch) - mid}",
                 file=sys.stderr,
             )
-            return _fetch_batch(batch[:mid], depth + 1) + _fetch_batch(batch[mid:], depth + 1)
-        return parse_pubmed_xml(xml_text)     # parse_pubmed_xml is thread-safe
-                                              # (record_filter_event uses _FILTER_AUDIT_LOCK)
+            return _fetch_batch(batch[:mid]) + _fetch_batch(batch[mid:])
+        SOURCE_FETCH_ERRORS.append({
+            "url": url,
+            "kind": kind,
+            "error": f"{kind} after retries for PubMed efetch batch size {len(batch)}",
+        })
+        print(f"  [WARN] fetch failed {url}: {kind}", file=sys.stderr)
+        return []
 
     # ── Parallel efetch ───────────────────────────────────────────────────────
     papers: list[dict] = []
@@ -1480,20 +1447,35 @@ def fetch_pubmed_papers(start_date, end_date, days: int = 1) -> list[dict]:
                 except Exception as exc:
                     print(f"  [WARN] efetch batch failed: {exc}", file=sys.stderr)
 
+    # Apply local date filter using primary display date (journal-first)
     before_date_filter = len(papers)
-    papers = [paper for paper in papers if apply_pubmed_date_window(paper, start_date, end_date)]
+    papers = [p for p in papers if apply_pubmed_date_window(p, start_date, end_date)]
     removed_by_date = before_date_filter - len(papers)
     if removed_by_date:
-        print(
-            f"  PubMed local date-window filter removed {removed_by_date} papers outside {start_date} ~ {end_date}",
-            file=sys.stderr,
-        )
+        print(f"  PubMed: removed {removed_by_date} papers outside date window", file=sys.stderr)
 
     papers.sort(key=lambda item: (item.get("score", 0), item.get("date", "")), reverse=True)
     PUBMED_FETCH_STATS["after_scoring"] = len(papers)
     print(f"  PubMed: {len(papers)} papers after scoring", file=sys.stderr)
     return papers
 
+
+
+def write_fetch_status(path, status: str, target_date, start_date, days: int, top_count: int, error: str = "") -> None:
+    payload = {
+        "status": status,
+        "target_date": str(target_date),
+        "window_start": str(start_date),
+        "window_end": str(target_date),
+        "days": days,
+        "top_count": top_count,
+        "source_fetch_error_count": len(SOURCE_FETCH_ERRORS),
+        "source_fetch_errors": list(SOURCE_FETCH_ERRORS),
+        "pubmed_stats": dict(PUBMED_FETCH_STATS),
+        "biorxiv_stats": dict(BIORXIV_FETCH_STATS),
+        "error": error,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 def load_history() -> list[dict]:
     if HISTORY_PATH.exists():
@@ -1543,9 +1525,9 @@ def merge_and_dedup(papers: list[dict], target_date, days: int = 1, top_n: int =
             record_filter_event("below_min_score", paper, {"min_score_threshold": MIN_SCORE})
     candidates.sort(
         key=lambda item: (
-            item.get("score", 0),
+            1 if item.get("matched_keywords") else 0,
             len(item.get("matched_keywords", [])),
-            len(item.get("matched_boost_keywords", [])),
+            item.get("score", 0),
             item.get("date", ""),
         ),
         reverse=True,
@@ -1576,10 +1558,13 @@ def main():
     if override_keywords:
         KEYWORDS = override_keywords
 
-    window = parse_window(args.date, args.days)
-    target_date = window.end
-    days = window.days
-    start_date = window.start
+    if args.date:
+        _dp = args.date.split("-")
+        target_date = date(int(_dp[0]), int(_dp[1]), int(_dp[2]))
+    else:
+        target_date = datetime.now().date()
+    days = max(1, args.days)
+    start_date = target_date - timedelta(days=days - 1)
     top_n = TOP_N * days
 
     print(
@@ -1594,11 +1579,21 @@ def main():
         papers.extend(fetch_biorxiv_papers(start_date, target_date, days))
     top = merge_and_dedup(papers, target_date, days=days, top_n=top_n)
     output_path = temp_file_path("daily_papers_top30.json")
-    output_path.write_text(json.dumps(top, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     filter_audit_path = temp_file_path("daily_papers_filter_audit.json")
+    fetch_status_path = temp_file_path("daily_papers_fetch_status.json")
     filter_audit_path.write_text(json.dumps(filter_audit_snapshot(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        raise_if_fetch_failed_without_candidates(top, stage="fetch_and_score")
+    except RuntimeError as exc:
+        write_fetch_status(fetch_status_path, "failed", target_date, start_date, days, len(top), str(exc))
+        print(str(exc), file=sys.stderr)
+        print(f"  Wrote failure status: {fetch_status_path}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    output_path.write_text(json.dumps(top, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_fetch_status(fetch_status_path, "success", target_date, start_date, days, len(top))
     print(f"  Wrote: {output_path}", file=sys.stderr)
     print(f"  Wrote: {filter_audit_path}", file=sys.stderr)
+    print(f"  Wrote: {fetch_status_path}", file=sys.stderr)
     json.dump(top, sys.stdout, ensure_ascii=False, indent=2)
     print(file=sys.stdout)
 

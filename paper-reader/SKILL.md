@@ -61,21 +61,37 @@ python ..\paper-reader\run_reader.py "https://example.com/article" --mode critic
 python ..\paper-reader\run_reader.py "<DOI_OR_URL>" --mode standard --prefer-visible-browser
 ```
 
-patchright 抓取顺序：
+patchright 抓取策略（优先级）：
 
-1. 如果 `PAPER_READER_CDP_URL` / `CHROME_CDP_URL` 指向一个已开启 remote debugging 的 Chrome，优先连接它，cookie 来源记为 `existing_cdp_browser`。
-2. 否则尝试用真实 Chrome `User Data` 目录启动 CDP Chrome；如果 profile 未被占用，cookie 来源记为 `real_chrome_profile`。
-3. 如果默认 profile 正在运行，只能回退临时 profile，cookie 来源记为 `temp_profile_no_cookies`。这类结果不能假定带有机构登录 cookies。
+1. **已有 CDP Chrome**（可选）：如果环境变量 `PAPER_READER_CDP_URL` / `CHROME_CDP_URL` 指向已开启 remote debugging 的 Chrome，优先连接并复用其 cookies。
+2. **默认：`launch_persistent_context`**：patchright 自行启动 Chromium，使用按发行商分类的持久化 profile（存于系统临时目录 `pdf_fetcher_pw_<publisher>/`）。
+   - 所有反自动化检测补丁生效（`navigator.webdriver` 隐藏，fingerprint 伪装）。
+   - Cloudflare Turnstile **自动通过**，首次约 10-20 秒，之后因 `cf_clearance` cookie 复用约 3-5 秒。
+   - 各发行商（Science.org、OUP、Wiley 等）的清除 cookie 单独积累，互不干扰。
 
-如果必须复用正在打开的日常 Chrome cookies，需要先用 remote debugging 启动 Chrome，然后设置 `PAPER_READER_CDP_URL`。
+如需机构登录 cookie（付费论文），设置 `PAPER_READER_CDP_URL` 指向已登录机构账户的 Chrome 实例。
+
+
+## Figure 下载策略
+
+- Figure 1 优先从出版社 HTML/DOM 中下载真实图片文件，不把截图当作成功结果。
+- 当前已按生产路径验证的出版社规则：
+  - Science / PNAS / Cell：DOM 中有真实图片 URL，但普通 HTTP 可能 403；使用文章页面内 `fetch(..., credentials: 'include')` 获取 image bytes。
+  - Nature：`media.springernature.com` 图像可直接下载。
+  - OUP / Molecular Biology and Evolution：优先解析 `/view-large/figure/...` 或 Silverchair signed CDN 大图；拒绝明显缩略图，失败时回退 PDF Figure 裁图。
+  - Wiley：优先用浏览器 profile 的 context.request 直接抓文章 HTML，解析 cms/asset/...-fig-0001-m.jpg 并扩展为高分辨率 ...-fig-0001.jpg 后下载；普通 HTTP 403/Cloudflare 时不视为 URL 规则失败。
+- HTML 图必须满足真实 `image/*` 响应且不是明显缩略图；否则继续尝试下一个候选或回退到 PDF 裁图。
+- 如果网页图和 PDF 图都不可得，不阻塞正文笔记生成；Figures 部分降级为空或仅保留文字分析。
 
 ## 输入处理
 
 ### PubMed URL
 
-- 提取 PMID
-- 调用 PubMed E-utilities 获取标题、作者、摘要、DOI、关键词等元数据
-- 默认按 `基于摘要/元数据` 生成笔记
+三步流水线（Step A → Step C）：
+
+- **Step A（PMC 优先）**：通过 NCBI eLink 查 PMC ID。若有，取 PMC XML 全文（JATS，结构最优）并用 PubMed 元数据补全。同时用 patchright `launch_persistent_context` 打开 PMC 文章页，滚动触发懒加载，下载 Fig1（CDN 直链，无 Cloudflare）并保存 PDF。
+- **Step B（已移除）**：PubMed HTML 全文链接抓取已删除——PMC 有的走 A 覆盖，PMC 没有的需要 patchright 绕过，直接走 C。
+- **Step C（发行商 DOI）**：Step A 无 PMC 记录时，取 PubMed 元数据获得 DOI，再用 patchright `launch_persistent_context` 打开 DOI 页面（自动绕过 Cloudflare），下载 PDF 并提取 Fig1。Elsevier DOI 优先调 API 全文。
 
 ### DOI / DOI URL
 
@@ -85,6 +101,11 @@ patchright 抓取顺序：
 - 否则退回 `基于网页内容/元数据`
 
 ### 本地 PDF
+
+- PDF 正文提取现在采用 MinerU-first：优先调用本机 `mineru` 将 PDF 转成 Markdown，再把 Markdown 正文作为全文材料。
+- MinerU 只用于文本，不使用 MinerU 切出的图片作为 `figure_paths`，因为复合图容易被拆成多个局部图。
+- 如果 MinerU 不存在、失败、超时或输出过短，自动回退到旧路径：`pdftotext` -> `pypdf` -> PDF raw stream。
+- 可用 `PAPER_READER_PDF_TEXT_ENGINE=legacy` 临时关闭 MinerU；`PAPER_READER_MINERU_TIMEOUT` 可调超时时间，默认 300 秒。
 
 - 直接读取 PDF 并提取可见文本片段
 - 如果文本提取成功，按 `基于全文/PDF文本提取`
@@ -142,3 +163,11 @@ patchright 抓取顺序：
 - 优先支持生物医学论文与论文落地页
 - 不要求支持 arXiv URL 作为主工作流
 - Elsevier support: if `sources.elsevier_api_key` is set in `../_shared/user-config.local.json` or `../_shared/user-config.json`, DOI inputs that resolve to Elsevier or ScienceDirect articles will try the Elsevier Article Retrieval API first with `view=FULL`, then fall back to browser/PDF extraction.
+
+## HARD GUARDRAILS: publisher PDF assets
+
+- For DOI/PubMed inputs from publishers with known downloadable PDFs, do not treat web-text-only extraction as a complete success. At minimum this includes DOI prefixes `10.1111/`, `10.1002/`, `10.1186/`, and `10.1007/`.
+- PubMed inputs must follow the DOI to the publisher asset path when a DOI exists. If the PubMed-source note ends with empty `downloaded_pdf`, `pdf_path`, and `local_pdf`, retry once with the DOI input before reporting failure.
+- A successful publisher-PDF note must write a local PDF path in frontmatter and the file must exist and start with `%PDF`. MinerU should then be used for PDF text extraction when available.
+- Wiley PDFs should prefer `https://onlinelibrary.wiley.com/doi/pdfdirect/<DOI>?download=true`; Springer/BMC `10.1186/` PDFs should prefer `https://link.springer.com/content/pdf/<DOI>_reference.pdf`.
+- Figure 1 should still prefer real publisher image files when available; if not available, PDF figure extraction is an acceptable fallback, but screenshot images are not.
