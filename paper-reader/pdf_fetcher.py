@@ -799,6 +799,94 @@ def _elsevier_fetch_xml_via_curl(doi: str, api_key: str,
     return ""
 
 
+
+_CELL_PRESS_DOI_SLUGS: dict[str, str] = {
+    "cell": "cell",
+    "celrep": "cell-reports",
+    "heliyon": "heliyon",
+    "isci": "iscience",
+    "cub": "current-biology",
+    "ajhg": "ajhg",
+    "neuron": "neuron",
+    "molcel": "molecular-cell",
+    "devcel": "developmental-cell",
+    "stem": "cell-stem-cell",
+    "immuni": "immunity",
+    "cmet": "cell-metabolism",
+    "chom": "cell-host-microbe",
+    "xgen": "cell-genomics",
+    "xcrm": "cell-reports-methods",
+}
+
+_CELL_PRESS_PUBLICATION_SLUGS: dict[str, str] = {
+    "cell": "cell",
+    "cell reports": "cell-reports",
+    "heliyon": "heliyon",
+    "iscience": "iscience",
+    "current biology": "current-biology",
+    "the american journal of human genetics": "ajhg",
+    "neuron": "neuron",
+    "molecular cell": "molecular-cell",
+    "developmental cell": "developmental-cell",
+    "cell stem cell": "cell-stem-cell",
+    "immunity": "immunity",
+    "cell metabolism": "cell-metabolism",
+    "cell host & microbe": "cell-host-microbe",
+    "cell genomics": "cell-genomics",
+    "cell reports methods": "cell-reports-methods",
+}
+
+
+def _elsevier_xml_text(xml_text: str, tag: str) -> str:
+    patterns = [
+        rf"<{re.escape(tag)}[^>]*>(.*?)</{re.escape(tag)}>",
+        rf"<[^:>]+:{re.escape(tag)}[^>]*>(.*?)</[^:>]+:{re.escape(tag)}>",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, xml_text or "", re.S | re.I)
+        if match:
+            return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", match.group(1))).strip()
+    return ""
+
+
+def _compact_elsevier_pii(pii: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", pii or "")
+
+
+def _elsevier_pii_from_xml(xml_text: str) -> str:
+    pii = _elsevier_xml_text(xml_text, "pii")
+    if pii:
+        return pii
+    for pattern in (r"/pii/(S\d+)", r"1-s2\.0-(S\d+)"):
+        match = re.search(pattern, xml_text or "", re.I)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _cell_press_slug_for_elsevier(doi: str, publication_name: str) -> str:
+    doi_match = re.match(r"10\.1016/j\.([A-Za-z0-9]+)", doi or "", re.I)
+    if doi_match:
+        slug = _CELL_PRESS_DOI_SLUGS.get(doi_match.group(1).lower())
+        if slug:
+            return slug
+    key = re.sub(r"\s+", " ", (publication_name or "").strip().lower())
+    return _CELL_PRESS_PUBLICATION_SLUGS.get(key, "")
+
+
+def _elsevier_article_url_from_xml(doi: str, xml_text: str) -> str:
+    pii = _elsevier_pii_from_xml(xml_text)
+    if not pii:
+        return ""
+    publication = _elsevier_xml_text(xml_text, "publicationName")
+    cell_slug = _cell_press_slug_for_elsevier(doi, publication)
+    if cell_slug:
+        return f"https://www.cell.com/{cell_slug}/fulltext/{quote(pii, safe='()-')}"
+    compact = _compact_elsevier_pii(pii)
+    if compact:
+        return f"https://www.sciencedirect.com/science/article/pii/{compact}"
+    return ""
+
 def _parse_elsevier_xml_simple(xml_text: str) -> tuple[str, str]:
     """
     Quick regex-based extraction of (abstract, body_text) from Elsevier XML.
@@ -928,7 +1016,7 @@ async def _run_patchright_pipeline(
                 # ── patchright launch_persistent_context ──────────────────────
                 # Use a persistent profile keyed by publisher slug.
                 # cf_clearance and institutional session cookies survive
-                # across runs; Cloudflare passes automatically on repeat visits.
+                # across runs; explicit captcha pages still need manual verification.
                 _slug = _publisher_slug_from_url(article_url)
                 _profile_dir = os.path.join(
                     tempfile.gettempdir(),
@@ -1256,6 +1344,9 @@ def fetch_paper_pdf(
     if elsevier_api_key and doi_plain.startswith("10.1016/"):
         xml = _elsevier_fetch_xml_via_curl(doi_plain, elsevier_api_key)
         if xml:
+            article_url = _elsevier_article_url_from_xml(doi_plain, xml)
+            if article_url:
+                url = article_url
             abstract, full_text = _parse_elsevier_xml_simple(xml)
             if full_text.strip():
                 result["full_text"]        = full_text[:60_000]

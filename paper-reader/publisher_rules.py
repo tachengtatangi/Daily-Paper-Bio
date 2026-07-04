@@ -101,9 +101,9 @@ PUBLISHER_ASSET_RULES: dict[str, dict[str, object]] = {
     },
     "cell_elsevier": {
         "hosts": ["cell.com", "sciencedirect.com"],
-        "fig1": "/cms/<doi>/asset/<uuid>/main.assets/gr1.jpg; ga1.jpg is graphical abstract.",
-        "pdf": "Elsevier API first when configured; otherwise browser/PDF link discovery.",
-        "notes": "Prefer gr1 over graphical abstract ga1 when both are present.",
+        "fig1": "Cell: /cms/<doi>/asset/<uuid>/main.assets/gr1.jpg; ScienceDirect: https://ars.els-cdn.com/content/image/1-s2.0-<compactPII>-gr1.jpg.",
+        "pdf": "Elsevier API first when configured; Cell Press PDF often works from cell.com fulltext pages; ScienceDirect PDF may require subscription.",
+        "notes": "Use Elsevier API PII to resolve 10.1016 DOI directly to cell.com or sciencedirect.com, avoiding doi.org/linkinghub captcha where possible. Prefer gr1 over graphical abstract ga1.",
     },
     "nature_springer": {
         "hosts": ["nature.com", "springer.com", "media.springernature.com"],

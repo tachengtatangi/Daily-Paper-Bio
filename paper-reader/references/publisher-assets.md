@@ -45,12 +45,22 @@ preferences.
 
 - Cell Fig1 pattern:
   `/cms/<doi>/asset/<uuid>/main.assets/gr1.jpg`
+- Cell high-resolution Fig1 may use:
+  `/cms/<doi>/asset/<uuid>/main.assets/gr1_lrg.jpg`
 - Cell graphical abstract pattern:
   `/cms/<doi>/asset/<uuid>/main.assets/ga1.jpg`
-- Prefer `gr1.jpg` for Figure 1. Reject `ga1.jpg` when the task asks for the
-  first article figure rather than graphical abstract.
+- ScienceDirect Fig1 pattern seen in production:
+  `https://ars.els-cdn.com/content/image/1-s2.0-<compactPII>-gr1.jpg`
+- Prefer `gr1.jpg` / `gr1_lrg.jpg` for Figure 1. Reject `ga1.jpg` when the task
+  asks for the first article figure rather than graphical abstract.
 - For Elsevier/ScienceDirect full text, use the Elsevier API first when
-  `sources.elsevier_api_key` is configured.
+  `sources.elsevier_api_key` is configured. The API provides text/XML and PII;
+  PDF still depends on browser access to the publisher page.
+- For `10.1016/*` DOI inputs, resolve the API PII directly to `cell.com/<journal>/fulltext/<PII>`
+  for known Cell Press journals, or `sciencedirect.com/science/article/pii/<compactPII>`
+  for other Elsevier journals. This avoids the more fragile `doi.org` / LinkingHub path.
+- ScienceDirect non-open PDFs may return HTML with HTTP 200; treat that as
+  subscription/paywall, while still keeping API text and HTML Fig1 if available.
 
 ### Science / PNAS
 
