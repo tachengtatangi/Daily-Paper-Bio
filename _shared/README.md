@@ -4,8 +4,8 @@ This directory contains shared configuration and helper modules used by the Dail
 
 For installation, configuration, and usage instructions, see:
 
-- English: [../README.md](../README.md)
-- 中文: [../README.zh-CN.md](../README.zh-CN.md)
+- 中文: [../README.md](../README.md)
+- English: [../README.en.md](../README.en.md)
 
 Important files:
 

@@ -1,10 +1,10 @@
-[中文说明](README.zh-CN.md) | English
+English: [README.en.md](README.en.md)
 
 # Daily Paper Bio
 
-Daily Paper Bio is a Codex skill workflow for people who want to keep up with life-science papers without manually checking PubMed, bioRxiv, publisher pages, and local PDFs every day.
+Daily Paper Bio 是一套面向生命科学论文筛选和 Obsidian 笔记的 Codex skills。它解决的事情很简单：你不想每天手动翻 PubMed、bioRxiv、出版社页面和一堆 PDF，但又希望知道今天有没有真正值得看的论文。
 
-In day-to-day use, you mostly say one sentence to Codex:
+日常使用时，基本只需要对 Codex 说一句话：
 
 ```text
 今日论文推荐
@@ -12,21 +12,21 @@ In day-to-day use, you mostly say one sentence to Codex:
 读一下这篇论文 https://pubmed.ncbi.nlm.nih.gov/41803465/
 ```
 
-It will fetch new papers, score them against your research interests, write an Obsidian recommendation page, and generate full notes for the papers marked as must-read.
+它会抓取新论文，按你的研究方向筛一轮，写入 Obsidian 推荐页，并只为「必读」论文生成完整结构化笔记。
 
-This project is adapted from [huangkiki/dailypaper-skills](https://github.com/huangkiki/dailypaper-skills). The original workflow focuses on arXiv/HuggingFace-style paper streams; this version is rebuilt around PubMed, bioRxiv, publisher pages, CAS journal quartiles, PDF extraction, and Obsidian notes for biology and biomedical research.
+本项目参考并改造自 [huangkiki/dailypaper-skills](https://github.com/huangkiki/dailypaper-skills)。原版主要面向 arXiv / HuggingFace Daily 论文流；这个版本围绕 PubMed、bioRxiv、出版社网页、CAS 期刊分区、PDF 提取和生物医学方向 Obsidian 笔记重新整理。
 
-## What It Does
+## 它会帮你做什么
 
-- Fetches recent papers from PubMed and bioRxiv.
-- Scores papers with your `keywords`, `domain_boost_keywords`, `negative_keywords`, journal filters, and optional CAS quartile filtering.
-- Generates a daily recommendation page with `must-read`, `worth reading`, and `skip` buckets.
-- Uses the Codex agent to write reviewer-style comments instead of publishing raw templates.
-- Generates full structured notes only for must-read papers.
-- Reads PubMed URLs, DOI links, publisher article pages, local PDFs, and bioRxiv PDFs.
-- Maintains Obsidian paper-note indexes and concept MOCs.
+- 从 PubMed 和 bioRxiv 抓近期论文。
+- 用你的 `keywords`、`domain_boost_keywords`、`negative_keywords`、期刊黑名单和可选 CAS 分区进行筛选打分。
+- 生成每日推荐页，分成「必读 / 值得看 / 可跳过」。
+- review 阶段由 Codex Agent 写审稿人口吻的真实评论，不把模板草稿直接发布。
+- 只为「必读」论文生成完整笔记，避免把所有候选都读一遍浪费时间。
+- 支持 PubMed URL、DOI、出版社网页、本地 PDF 和 bioRxiv PDF。
+- 自动维护 Obsidian 论文目录页和概念索引。
 
-The output in Obsidian is roughly:
+最后在 Obsidian 里大概会长这样：
 
 ```text
 ObsidianVault/
@@ -40,9 +40,9 @@ ObsidianVault/
 └── AllPdfFig/
 ```
 
-## Everyday Usage
+## 怎么用
 
-Daily recommendations:
+每日推荐：
 
 ```text
 今日论文推荐
@@ -52,7 +52,7 @@ Daily recommendations:
 今日论文推荐，关键词 convergent evolution taste receptor
 ```
 
-Single-paper reading:
+读单篇论文：
 
 ```text
 读一下这篇论文 https://pubmed.ncbi.nlm.nih.gov/41803465/
@@ -60,93 +60,101 @@ Single-paper reading:
 批判性分析这篇论文 D:\papers\paper.pdf
 ```
 
-Refresh Obsidian indexes manually:
+手动刷新 Obsidian 索引：
 
 ```text
 更新索引
 ```
 
-## Requirements
+## 需要准备什么
 
-Required:
+必需：
 
-- Codex with local skill support.
-- Python 3.10 or newer.
-- An Obsidian vault.
+- 支持本地 skills 的 Codex。
+- Python 3.10 或更新版本。
+- 一个 Obsidian vault。
 
-Strongly recommended:
+强烈推荐：
 
-- **MinerU** for PDF text extraction. The workflow still works without it, but MinerU usually produces cleaner full-text Markdown from PDFs than generic PDF parsers. That directly improves paper notes and summaries, especially for multi-column biology papers.
+- **MinerU**。这个项目不把 MinerU 打包进仓库，但如果本机能找到 `mineru` 命令，`paper-reader` 会优先用它提取 PDF 文本。实际使用下来，MinerU 从论文 PDF 里得到的 Markdown 往往比普通 PDF parser 更干净，尤其是双栏论文、复杂版式和长正文；这会直接影响必读笔记质量。
 
-Optional but useful:
+可选但有用：
 
-- `patchright` Chromium for publisher pages that need a browser session.
-- NCBI API key for faster PubMed requests.
-- Elsevier API key for ScienceDirect / Cell Press full-text retrieval when available.
+- `patchright` Chromium，用于需要浏览器会话的出版社网页。
+- NCBI API key，用于加速 PubMed 请求。
+- Elsevier API key，用于可访问时读取 ScienceDirect / Cell Press 全文。
 
-## Install
+## 浏览器会话和人机验证
 
-The install method follows the original skill repository style: clone the repo, then copy the skill directories into your local Codex skills directory. No installer script is required.
+出版社 PDF 和 Figure 抓取会通过 `patchright` 使用按出版社分开的持久化浏览器 profile。这样可以复用 cookies 和 Cloudflare clearance；很多被动浏览器检测在第一次通过后，后续自动化会稳定很多。
 
-Clone the repository:
+如果出版社明确显示 CAPTCHA 或 `Are you a robot?` 复选框，skill 不会尝试自动破解或自动点击。你可以在打开的浏览器窗口里手动完成一次验证，之后同一 profile 通常能复用验证 cookie。cookie 过期、网络/IP 改变、临时 profile 被清理，或出版社调整风控规则时，验证仍可能再次出现。
+
+如果要放到无人值守自动化里，建议先手动预热常用出版社页面，例如 Cell Press、ScienceDirect、Wiley、OUP、Nature、Science 和 PNAS。即使后续仍遇到访问限制，流程也应该明确报告访问受限，并回退到 API、摘要、HTML 正文或 HTML Figure 1 等可用证据，而不是一直空等。
+
+## 安装
+
+安装方式参考原版 skill 仓库：clone 以后，把 skill 目录复制到本机 Codex skills 目录。不需要额外安装脚本。
+
+先 clone 仓库：
 
 ```bash
 git clone https://github.com/tachengtatangi/Daily-Paper-Bio.git
 cd Daily-Paper-Bio
 ```
 
-Install Python dependencies:
+安装 Python 依赖：
 
 ```bash
 python -m pip install -r daily-papers/requirements.txt
 ```
 
-Install MinerU and make sure the `mineru` command works in your terminal. Follow the official MinerU installation instructions for your platform. This project does not vendor MinerU; it only calls the local CLI when available.
+安装 MinerU，并确保终端里能运行 `mineru`。请按 MinerU 官方文档选择适合你系统的安装方式。Daily Paper Bio 只调用本机已有的 MinerU CLI，不会在仓库里内置 MinerU。
 
-The command used internally is essentially:
+内部实际调用大致是：
 
 ```bash
 mineru -p "<pdf_path>" -o "<output_root>" --method auto --backend pipeline
 ```
 
-Install the optional browser runtime:
+可选安装浏览器运行时：
 
 ```bash
 patchright install chromium
 ```
 
-Copy the skill directories into Codex.
+把 skill 目录复制到 Codex。
 
-macOS / Linux / Git Bash:
+macOS / Linux / Git Bash：
 
 ```bash
 mkdir -p ~/.codex/skills
 cp -R _shared daily-papers daily-papers-fetch daily-papers-review daily-papers-notes paper-reader generate-mocs playwright ~/.codex/skills/
 ```
 
-Windows PowerShell:
+Windows PowerShell：
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills"
 Copy-Item -Recurse -Force _shared,daily-papers,daily-papers-fetch,daily-papers-review,daily-papers-notes,paper-reader,generate-mocs,playwright "$env:USERPROFILE\.codex\skills\"
 ```
 
-If you are updating an existing installation, back up your runtime config first or re-apply your local settings afterwards:
+如果是在已有安装上更新，先备份或事后恢复你的本地配置：
 
 ```text
 ~/.codex/skills/_shared/user-config.json
 ~/.codex/skills/_shared/user-config.local.json
 ```
 
-## Configure
+## 配置
 
-Edit the runtime config after installing the skills:
+安装后编辑运行目录里的配置：
 
 ```text
 ~/.codex/skills/_shared/user-config.json
 ```
 
-Minimum configuration:
+至少要改 Obsidian vault 路径和研究关键词：
 
 ```json
 {
@@ -161,19 +169,19 @@ Minimum configuration:
 }
 ```
 
-Put private keys in the local override file, not in the public config:
+真实 API key 放在 local 覆盖文件里，不要写进公开配置：
 
 ```bash
 cp ~/.codex/skills/_shared/user-config.local.json.example ~/.codex/skills/_shared/user-config.local.json
 ```
 
-On Windows PowerShell:
+Windows PowerShell：
 
 ```powershell
 Copy-Item "$env:USERPROFILE\.codex\skills\_shared\user-config.local.json.example" "$env:USERPROFILE\.codex\skills\_shared\user-config.local.json"
 ```
 
-Then edit:
+然后按需填写：
 
 ```json
 {
@@ -189,17 +197,17 @@ Then edit:
 }
 ```
 
-`user-config.local.json` is ignored by git. Do not commit API keys, cookies, or private paths.
+`user-config.local.json` 已经被 `.gitignore` 排除。不要提交真实 API key、cookie 或你的本机私有路径。
 
-## CAS Quartile Data
+## CAS 分区表
 
-This repository includes a redistributable CAS journal quartile workbook:
+仓库包含可再分发的 CAS 期刊分区表：
 
 ```text
 _shared/data/cas_quartiles_2025.xlsx
 ```
 
-It is used by the optional PubMed journal filter. bioRxiv papers are not filtered by CAS quartile. For first-time debugging, set:
+它用于 PubMed 论文的期刊分区过滤。bioRxiv 预印本不受 CAS 分区过滤。第一次调试时建议先放宽：
 
 ```json
 {
@@ -210,68 +218,76 @@ It is used by the optional PubMed journal filter. bioRxiv papers are not filtere
 }
 ```
 
-After you confirm the workflow returns papers, tighten the thresholds to match your reading capacity.
+确认有结果后，再把阈值收紧到你的阅读容量能承受的程度。
 
-## How It Works
+## 它内部大概怎么跑
 
-`今日论文推荐` is split into three skills:
+`今日论文推荐` 实际拆成三步：
 
-1. `daily-papers-fetch`: fetch PubMed + bioRxiv, score papers, deduplicate, enrich metadata, and write temporary JSON.
-2. `daily-papers-review`: build a structured draft, then let the Codex agent write real comments before publishing the final Obsidian Markdown.
-3. `daily-papers-notes`: generate full notes only for must-read papers, backfill note links, and refresh MOCs.
+1. `daily-papers-fetch`：抓 PubMed + bioRxiv，打分，去重，富化元数据，写入临时 JSON。
+2. `daily-papers-review`：生成结构化 draft，由 Codex Agent 写真实评论，然后发布正式 Obsidian Markdown 并更新 history。
+3. `daily-papers-notes`：只为「必读」论文生成完整笔记，回填链接，刷新 MOC。
 
-A safe smoke test that does not publish a final recommendation page:
+如果只是想测试抓取和 draft 生成，不发布正式推荐页：
 
 ```bash
 python daily-papers/run_pipeline.py --date 2026-07-03 --days 3 --notes-limit 0
 ```
 
-This writes a draft under the configured temp folder. A draft is not a final recommendation page; any `TODO_AGENT` field must be replaced by the review stage before publishing.
+这个命令只会在配置的临时目录里生成 draft。draft 不是正式推荐页，里面任何 `TODO_AGENT` 都必须由 review 阶段替换后才能发布。
 
-## Repository Layout
+## 仓库里有什么
 
 ```text
 Daily-Paper-Bio/
-├── _shared/                 # shared config, CAS lookup, MOC builders
-├── daily-papers/            # fetch, score, enrich, draft, history
-├── daily-papers-fetch/      # fetch skill wrapper
-├── daily-papers-review/     # review skill wrapper
-├── daily-papers-notes/      # notes skill wrapper
-├── paper-reader/            # single-paper reader and note generator
-├── generate-mocs/           # Obsidian index generation
-├── playwright/              # browser helper skill
+├── _shared/                 # 共享配置、CAS 查询、MOC 生成器
+├── daily-papers/            # 抓取、打分、富化、draft、history
+├── daily-papers-fetch/      # fetch skill 包装
+├── daily-papers-review/     # review skill 包装
+├── daily-papers-notes/      # notes skill 包装
+├── paper-reader/            # 单篇论文阅读和笔记生成
+├── generate-mocs/           # Obsidian 索引生成
+├── playwright/              # 浏览器辅助 skill
 ├── README.md
-└── README.zh-CN.md
+└── README.en.md
 ```
+
+日常真正会直接用到的主要是：
+
+- `daily-papers`
+- `paper-reader`
+- `generate-mocs`
+
+其他几个 skill 是为了把流水线拆清楚，方便调试和重跑。
 
 ## FAQ
 
-**Do I have to use Obsidian?**
+**一定要用 Obsidian 吗？**
 
-The output is Markdown, so you can read it anywhere. Obsidian is recommended because the workflow uses wiki links, indexes, and concept pages.
+不一定。输出本质是 Markdown。但这个 workflow 会用到 wiki link、目录页和概念页，所以 Obsidian 最顺手。
 
-**Do I have to use MinerU?**
+**一定要装 MinerU 吗？**
 
-No, but it is strongly recommended. Without MinerU, the reader falls back to local PDF parsers. That is enough for many PDFs, but the text is usually less structured, especially for multi-column papers.
+不是硬依赖，但强烈建议装。没有 MinerU 时会回退到本地 PDF parser，很多论文也能读；但多栏 PDF 和复杂版式下，MinerU 的正文提取通常更稳定，笔记质量会明显更好。
 
-**Why did I get zero recommendations?**
+**为什么推荐结果是 0？**
 
-First set `min_quartile` to `4` and `min_score` to `1`, then inspect `daily_papers_filter_audit.json`. Most zero-result cases are caused by overly narrow keywords, strict quartile filtering, or negative keywords catching too much.
+先把 `min_quartile` 改成 `4`、`min_score` 改成 `1`，然后看 `daily_papers_filter_audit.json`。大多数 0 结果来自关键词太窄、分区过滤太严，或者负面词误杀。
 
-**Does it automatically commit my Obsidian vault?**
+**会自动 commit 我的 Obsidian vault 吗？**
 
-No. `automation.git_commit` and `automation.git_push` are false by default.
+默认不会。`automation.git_commit` 和 `automation.git_push` 默认都是 false。
 
-**Can this replace reading the paper?**
+**生成的笔记能直接用于论文写作吗？**
 
-No. Treat it as triage, reading notes, and a starting point for related-work organization. AI-generated comments and notes can be wrong; verify important claims against the original paper.
+建议把它当成 related work 整理、阅读记录和追问提纲。AI 生成内容可能误读或遗漏，正式写作前必须回到原文核验。
 
-## Disclaimer
+## 免责声明
 
-This is a personal research workflow, not a fully managed product. AI-generated recommendations, comments, and notes may contain factual errors, omissions, or misreadings. Use it as an assistant, not as a replacement for your own research judgment.
+这是个人研究工作流的开源整理，不是保证完全稳定的产品。AI 生成的推荐、点评和笔记可能有事实错误、遗漏或误读，更适合作为辅助工具，而不是替代自己的研究判断。
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0。见 [LICENSE](LICENSE)。
 
-Some bundled helper assets keep their own notices, including files under `playwright/`.
+部分辅助资源保留自身声明，例如 `playwright/` 下的 license/notice 文件。
