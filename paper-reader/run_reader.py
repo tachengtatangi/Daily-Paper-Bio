@@ -3294,9 +3294,29 @@ def build_materials_payload(record: dict, source: str, mode: str) -> dict:
 
 WORKSPACE_ROOT = Path(os.getenv("CODEX_WORKSPACE_ROOT") or os.getcwd()).resolve()
 
+def find_codex_cli() -> str | None:
+    candidates: list[str] = []
+    for name in ("codex.exe", "codex", "codex.cmd"):
+        path = shutil.which(name)
+        if path and path not in candidates:
+            candidates.append(path)
+    for path in candidates:
+        try:
+            result = subprocess.run(
+                [path, "--version"],
+                capture_output=True,
+                text=False,
+                timeout=15,
+            )
+        except Exception:
+            continue
+        if result.returncode == 0:
+            return path
+    return None
+
 
 def run_codex_prompt(prompt: str, cwd: Path, tmp_dir: Path, timeout: int = 900):
-    codex_cmd = shutil.which("codex.cmd") or shutil.which("codex") or shutil.which("codex.exe")
+    codex_cmd = find_codex_cli()
     if not codex_cmd:
         return None
     try:
@@ -3833,7 +3853,7 @@ def generate_sections_with_codex(record: dict, source: str, mode: str) -> dict |
     tmp_dir = Path(tempfile.mkdtemp(prefix="paper_reader_", dir=str(WORKSPACE_ROOT)))
     material_path = tmp_dir / "materials.json"
     material_path.write_text(json.dumps(materials, ensure_ascii=False, indent=2), encoding="utf-8")
-    result = run_codex_prompt(build_generation_prompt(material_path, mode), WORKSPACE_ROOT, tmp_dir)
+    result = run_codex_prompt(build_generation_prompt(materials, mode), WORKSPACE_ROOT, tmp_dir)
     if result is None:
         # Codex CLI not installed or not found — let the caller try the
         # direct LLM API path (generate_sections_with_llm) instead.
@@ -3852,7 +3872,7 @@ def generate_sections_with_codex(record: dict, source: str, mode: str) -> dict |
         return draft
     draft_path = tmp_dir / "draft.json"
     draft_path.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding="utf-8")
-    rewrite = run_codex_prompt(build_rewrite_prompt(material_path, draft_path, mode), WORKSPACE_ROOT, tmp_dir)
+    rewrite = run_codex_prompt(build_rewrite_prompt(materials, draft, mode), WORKSPACE_ROOT, tmp_dir)
     if rewrite is not None and rewrite.returncode == 0:
         rewritten = parse_sections_output((rewrite.stdout or "").strip())
         if rewritten:

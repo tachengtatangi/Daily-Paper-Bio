@@ -39,6 +39,19 @@ SECTION_KEYS = [
     "notes",
 ]
 
+PROMPT_JSON_CHAR_LIMIT = 120_000
+
+def _json_for_prompt(value: object, label: str) -> str:
+    if isinstance(value, (str, Path)):
+        return f"{label} file path: {value}\n"
+    try:
+        payload = json.dumps(value, ensure_ascii=False, indent=2)
+    except TypeError:
+        payload = json.dumps(str(value), ensure_ascii=False, indent=2)
+    if len(payload) > PROMPT_JSON_CHAR_LIMIT:
+        payload = payload[:PROMPT_JSON_CHAR_LIMIT] + "\n[... truncated by paper-reader ...]"
+    return f"{label} content:\n{payload}\n"
+
 BAD_OUTPUT_PHRASES = [
     "与题目相关的核心科学问题",
     "当前主要基于自动提取结果",
@@ -380,15 +393,16 @@ def build_fallback_sections(record: dict, mode: str) -> dict:
         "notes": markdown_bullets(notes),
     }
 
-def build_generation_prompt(material_path: Path, mode: str) -> str:
+def build_generation_prompt(materials: object, mode: str) -> str:
     mode_hint = {
         "standard": "生成一份适合 Obsidian 论文笔记的中文研究记录，厚一点、具体一点，不要摘要腔。",
         "quick": "生成一份简洁但仍有判断力的中文速览笔记，明确告诉我这篇文章值不值得细读。",
         "critical": "生成一份中文批判性笔记，重点写证据边界、方法假设、替代解释和外推风险。",
     }[mode]
+    materials_block = _json_for_prompt(materials, "materials.json")
     return (
-        "请读取本地 JSON 材料文件，只输出一个 JSON 对象，不要解释，不要 Markdown 代码围栏。\n"
-        f"材料文件: {material_path}\n"
+        "Use the embedded materials.json content below; output only one JSON object, no explanation and no Markdown code fence.\n"
+        f"{materials_block}\n"
         "你是在为 Obsidian 里的论文笔记生成结构化中文内容。\n"
         f"{mode_hint}\n"
         "\n"
@@ -440,16 +454,18 @@ def build_generation_prompt(material_path: Path, mode: str) -> str:
         "paper_topic, one_sentence_summary, background_context, research_question, data_materials, core_methods, main_findings, figure_takeaways, strengths, limitations, critical_analysis, related_concepts, quick_reference, notes\n"
     )
 
-def build_rewrite_prompt(material_path: Path, draft_path: Path, mode: str) -> str:
+def build_rewrite_prompt(materials: object, draft: object, mode: str) -> str:
     mode_hint = {
         "standard": "把初稿重写成更自然、更完整的中文论文笔记。",
         "quick": "把初稿重写成更简洁但仍然准确的中文速览笔记。",
         "critical": "把初稿重写成更锋利的中文批判性笔记。",
     }[mode]
+    materials_block = _json_for_prompt(materials, "materials.json")
+    draft_block = _json_for_prompt(draft, "draft.json")
     return (
-        "你将读取两个本地 JSON 文件：materials.json 和 draft.json。\n"
-        f"materials.json: {material_path}\n"
-        f"draft.json: {draft_path}\n"
+        "Use the embedded materials.json and draft.json below to rewrite the final version.\n"
+        f"{materials_block}\n"
+        f"{draft_block}\n"
         "draft.json 只是初稿，请你根据 materials.json 和 draft.json 重写最终版本。\n"
         f"{mode_hint}\n"
         "════════════════════════════════════════\n"

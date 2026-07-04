@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from reader_text import article_sentences, normalize_whitespace
+from reader_text import article_sentences, clean_record_title, normalize_whitespace
 
 def summary_mode_indicates_fulltext(record: dict | str) -> bool:
     if isinstance(record, dict):
