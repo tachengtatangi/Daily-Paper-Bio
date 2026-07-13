@@ -85,8 +85,6 @@ def require_top30_ready(
     )
     papers = require_json_list(top30_path)
     expected_count = int(status.get("top_count") or 0)
-    if expected_count <= 0:
-        raise PipelineGuardError("fetch status reports zero selected papers")
     if len(papers) != expected_count:
         raise PipelineGuardError(
             f"top30 count mismatch: status top_count={expected_count}, file count={len(papers)}"

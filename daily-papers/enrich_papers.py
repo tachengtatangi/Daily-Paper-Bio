@@ -677,7 +677,19 @@ def main() -> None:
         sys.exit(1)
 
     if not papers:
-        _write_output("[]", output_path)
+        if auto_input:
+            try:
+                require_top30_ready(
+                    top30_path=temp_file_path("daily_papers_top30.json"),
+                    status_path=temp_file_path("daily_papers_fetch_status.json"),
+                )
+            except PipelineGuardError as exc:
+                print(f"[enrich_papers] refusing stale or failed fetch output: {exc}", file=sys.stderr)
+                sys.exit(2)
+        if not output_path:
+            output_path = str(temp_file_path("daily_papers_enriched.json"))
+            print(f"[enrich_papers] Auto output: {output_path}", file=sys.stderr)
+        _write_output("[]\n", output_path)
         return
 
     if auto_input:

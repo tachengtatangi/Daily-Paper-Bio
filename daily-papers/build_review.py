@@ -229,6 +229,31 @@ def _header_summary(primary: list[dict], low_signal: list[dict]) -> str:
 
 
 def build_markdown(papers: list[dict], today: str) -> str:
+    if not papers:
+        return "\n".join([
+            "---",
+            f"date: {today}",
+            "tags: [daily-papers, pubmed, biorxiv, auto-generated]",
+            "paper_count: 0",
+            "---",
+            "",
+            f"# {LABEL_REVIEW}",
+            "",
+            "本时间窗口内 PubMed 与 bioRxiv 抓取成功，但没有论文同时满足当前关键词、期刊分区和最低分数要求。未使用旧数据，也没有为凑数而降低筛选标准。",
+            "",
+            f"## {LABEL_SPLIT}",
+            "",
+            "| 等级 | 数量 |",
+            "|------|------|",
+            f"| {LABEL_MUST} | 0 |",
+            f"| {LABEL_WORTH} | 0 |",
+            f"| {LABEL_SKIP} | 0 |",
+            "",
+            "## 筛选结果",
+            "",
+            "本期无合格论文。",
+            "",
+        ])
     primary = [paper for paper in papers if is_primary(paper)]
     low_signal = [paper for paper in papers if not is_primary(paper)]
     sections = classify_sections(primary)

@@ -61,3 +61,4 @@ description: |
 ## HARD GUARDRAILS: pipeline success
 
 The pipeline must not interpret network failure as "no papers". Continue from fetch to review only when fetch wrote a successful `{TEMP_DIR}\daily_papers_fetch_status.json` for the requested date/window. If fetch fails, stop and report the failure; never use stale `daily_papers_enriched.json` and never publish an empty formal recommendation page.
+If every source fetch succeeds but top_count is zero, this is a valid no-match result rather than a pipeline failure. Enrich must write a fresh empty daily_papers_enriched.json, review must generate the dedicated non-empty no-match report, notes must be skipped, and the final summary must state that zero papers met the configured filters. Do not relax filters merely to avoid a zero result.
