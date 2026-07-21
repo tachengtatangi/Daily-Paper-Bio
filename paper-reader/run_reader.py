@@ -3315,7 +3315,7 @@ def find_codex_cli() -> str | None:
     return None
 
 
-def run_codex_prompt(prompt: str, cwd: Path, tmp_dir: Path, timeout: int = 900):
+def run_codex_prompt(prompt: str, cwd: Path, tmp_dir: Path, timeout: int = 240):
     codex_cmd = find_codex_cli()
     if not codex_cmd:
         return None
@@ -3340,6 +3340,12 @@ def run_codex_prompt(prompt: str, cwd: Path, tmp_dir: Path, timeout: int = 900):
             stdout=decode_text_blob(result.stdout or b""),
             stderr=decode_text_blob(result.stderr or b""),
         )
+    except subprocess.TimeoutExpired:
+        print(
+            f"[paper-reader] Codex note generation timed out after {timeout}s; falling back.",
+            file=sys.stderr,
+        )
+        return None
     except Exception:
         return None
 
@@ -3889,6 +3895,7 @@ def generate_sections_with_codex(record: dict, source: str, mode: str) -> dict |
     else:
         draft = {key: sanitize_model_text(draft.get(key, "")) for key in SECTION_KEYS}
     if not needs_chinese_rewrite(draft):
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return draft
     draft_path = tmp_dir / "draft.json"
     draft_path.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3898,8 +3905,10 @@ def generate_sections_with_codex(record: dict, source: str, mode: str) -> dict |
         if rewritten:
             rewritten = {key: sanitize_model_text(rewritten.get(key, "")) for key in SECTION_KEYS}
             if not needs_chinese_rewrite(rewritten):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
                 return rewritten
     repaired = {key: sanitize_model_text(draft.get(key, "")) for key in SECTION_KEYS}
+    shutil.rmtree(tmp_dir, ignore_errors=True)
     return repaired
 
 def choose_note_title(record: dict, source: str) -> str:
