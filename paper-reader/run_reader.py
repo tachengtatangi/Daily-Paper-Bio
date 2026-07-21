@@ -3686,6 +3686,26 @@ def doi_should_fetch_publisher_assets(doi: str) -> bool:
     ))
 
 
+def pdf_doi_matches_target(pdf_doi: str, target_doi: str) -> bool:
+    """Compare a PDF DOI with the target without accepting unrelated papers.
+
+    OUP article URLs append a numeric article id after the DOI. Text extraction
+    can greedily absorb that suffix (for example DOI/8734840), even though the
+    PDF itself is the correct paper.
+    """
+    candidate = parse_doi_candidate(normalize_whitespace(pdf_doi)).lower()
+    target = parse_doi_candidate(normalize_whitespace(target_doi)).lower()
+    if not candidate or not target:
+        return False
+    if candidate == target:
+        return True
+    if target.startswith("10.1093/") and re.fullmatch(
+        re.escape(target) + r"/\d{5,}", candidate
+    ):
+        return True
+    return False
+
+
 def fetch_doi(doi: str) -> dict:
 
 
@@ -3820,7 +3840,7 @@ def fetch_doi(doi: str) -> dict:
                 _pdf_bytes = _pdf_path.read_bytes()
                 _pdf_text_head = extract_pdf_text_from_bytes(_pdf_bytes, temp_pdf_path=_pdf_path)[:8000]
                 _pdf_doi = parse_doi_candidate(find_doi_in_text(_pdf_text_head))
-                if _pdf_doi and _pdf_doi != doi:
+                if _pdf_doi and not pdf_doi_matches_target(_pdf_doi, doi):
                     import sys as _sys
                     print(
                         f"[paper-reader] 警告：下载 PDF 的 DOI ({_pdf_doi}) 与目标 DOI ({doi}) 不匹配，已丢弃该 PDF。",
@@ -4656,6 +4676,11 @@ def save_note(record: dict, source: str, mode: str, created: str) -> Path:
         )
         sections_raw = build_fallback_sections(record, mode)
     sections_raw = _repair_english_fields(sections_raw, record)
+    if needs_chinese_rewrite(sections_raw):
+        raise RuntimeError(
+            "paper-reader generation failed the final quality gate; "
+            "refusing to overwrite the note with generic or placeholder content"
+        )
     sections = {key: render_note_section_text(key, sections_raw.get(key, "")) for key in SECTION_KEYS}
     authors = record.get("authors", [])
     if isinstance(authors, str):

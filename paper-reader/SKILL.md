@@ -66,8 +66,8 @@ patchright 抓取策略（优先级）：
 1. **已有 CDP Chrome**（可选）：如果环境变量 `PAPER_READER_CDP_URL` / `CHROME_CDP_URL` 指向已开启 remote debugging 的 Chrome，优先连接并复用其 cookies。
 2. **默认：`launch_persistent_context`**：patchright 自行启动 Chromium，使用按发行商分类的持久化 profile（存于系统临时目录 `pdf_fetcher_pw_<publisher>/`）。
    - 所有反自动化检测补丁生效（`navigator.webdriver` 隐藏，fingerprint 伪装）。
-   - Cloudflare Turnstile **自动通过**，首次约 10-20 秒，之后因 `cf_clearance` cookie 复用约 3-5 秒。
-   - 各发行商（Science.org、OUP、Wiley 等）的清除 cookie 单独积累，互不干扰。
+   - 持久化 profile 会复用已有 cookie 和被动验证状态，因此重复访问通常更稳定。
+   - 显式 CAPTCHA、Turnstile 复选框或 “Are you a robot?” 不能保证自动通过；无人值守任务应快速报告并回退，不得自动点击或长时间等待。
 
 如需机构登录 cookie（付费论文），设置 `PAPER_READER_CDP_URL` 指向已登录机构账户的 Chrome 实例。
 

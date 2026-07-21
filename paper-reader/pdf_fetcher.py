@@ -39,6 +39,8 @@ import time
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
+from pypdf import PdfReader
+
 from publisher_rules import (
     DOI_PREFIX_SLUG,
     PDF_DOMAINS,
@@ -319,7 +321,19 @@ def _image_dimensions_from_bytes(data: bytes) -> tuple[int, int]:
 
 
 def _acceptable_image_bytes(data: bytes, content_type: str) -> bool:
-    if not (content_type or "").lower().startswith("image/") or len(data) <= 5_000:
+    content_type = (content_type or "").lower()
+    if not content_type.startswith("image/") or len(data) <= 5_000:
+        return False
+    # Figure assets must be raster files. Publisher pages often return an SVG
+    # placeholder/spinner with HTTP 200 and image/svg+xml; accepting it creates
+    # a misleading .jpg path that later existence-only checks report as success.
+    raster_signature = (
+        data.startswith(b"\xff\xd8\xff")
+        or data.startswith(b"\x89PNG\r\n\x1a\n")
+        or data.startswith((b"GIF87a", b"GIF89a"))
+        or (len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP")
+    )
+    if not raster_signature:
         return False
     width, height = _image_dimensions_from_bytes(data)
     if width and height and max(width, height) < 700:
@@ -797,6 +811,74 @@ def _elsevier_fetch_xml_via_curl(doi: str, api_key: str,
     except Exception:
         pass
     return ""
+
+
+def _elsevier_fetch_pdf_via_curl(
+    doi: str,
+    api_key: str,
+    save_path: Path,
+    timeout: int = 90,
+) -> str:
+    """Download an entitled Elsevier PDF through Article Retrieval API."""
+    api_url = (
+        f"https://api.elsevier.com/content/article/doi/{quote(doi, safe='/')}"
+        f"?apiKey={quote(api_key, safe='')}&httpAccept=application/pdf&view=FULL"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                "curl", "-L", "-sS", "--max-time", str(timeout),
+                "-H", f"X-ELS-APIKey: {api_key}",
+                "-H", "Accept: application/pdf",
+                api_url,
+            ],
+            capture_output=True,
+            timeout=timeout + 10,
+        )
+        payload = completed.stdout or b""
+        try:
+            page_count = len(PdfReader(io.BytesIO(payload), strict=False).pages)
+        except Exception:
+            page_count = 0
+        if (
+            completed.returncode != 0
+            or not payload[:8].lstrip().startswith(b"%PDF")
+            or page_count < 2
+        ):
+            return ""
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_bytes(payload)
+        return str(save_path)
+    except Exception:
+        return ""
+
+
+def _elsevier_fetch_fig1_via_curl(
+    xml_text: str,
+    save_path: Path,
+    timeout: int = 60,
+) -> tuple[str, str]:
+    """Download Elsevier Figure 1 from the stable PII-backed image CDN."""
+    pii = _compact_elsevier_pii(_elsevier_pii_from_xml(xml_text))
+    if not pii:
+        return "", ""
+    source_url = f"https://ars.els-cdn.com/content/image/1-s2.0-{pii}-gr1.jpg"
+    try:
+        completed = subprocess.run(
+            ["curl", "-L", "-sS", "--max-time", str(timeout), source_url],
+            capture_output=True,
+            timeout=timeout + 10,
+        )
+        payload = completed.stdout or b""
+        is_image = payload.startswith((b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a"))
+        if completed.returncode != 0 or len(payload) < 2_000 or not is_image:
+            return "", ""
+        target = save_path.with_suffix(".jpg") if payload.startswith(b"\xff\xd8\xff") else save_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        return str(target), source_url
+    except Exception:
+        return "", ""
 
 
 
@@ -1319,6 +1401,7 @@ def fetch_paper_pdf(
     if not url:
         return result
 
+    elsevier_xml = ""
     # Extract DOI before URL normalization so publisher-specific DOI
     # shortcuts can avoid slow or challenge-prone doi.org redirects.
     doi_plain = ""
@@ -1344,6 +1427,7 @@ def fetch_paper_pdf(
     if elsevier_api_key and doi_plain.startswith("10.1016/"):
         xml = _elsevier_fetch_xml_via_curl(doi_plain, elsevier_api_key)
         if xml:
+            elsevier_xml = xml
             article_url = _elsevier_article_url_from_xml(doi_plain, xml)
             if article_url:
                 url = article_url
@@ -1378,6 +1462,32 @@ def fetch_paper_pdf(
     fig_save_path: Path | None = None
     if fig_save_dir:
         fig_save_path = Path(fig_save_dir) / (safe_ident + "-fig1.png")
+
+    # Elsevier's Article Retrieval API can return the entitled PDF directly.
+    # The same XML response exposes the PII used by the stable Figure 1 CDN.
+    # Prefer these deterministic assets over a challenge-prone browser page.
+    if elsevier_xml and elsevier_api_key:
+        if pdf_save_path:
+            saved_pdf = _elsevier_fetch_pdf_via_curl(
+                doi_plain, elsevier_api_key, pdf_save_path
+            )
+            if saved_pdf:
+                result["downloaded_pdf"] = saved_pdf
+                result["summary_mode"] = "基于 Elsevier API 全文/XML + PDF"
+                result["acquisition_path"] = "Elsevier API(view=FULL XML + PDF)"
+        if fig_save_path:
+            saved_fig, fig_url = _elsevier_fetch_fig1_via_curl(
+                elsevier_xml, fig_save_path
+            )
+            if saved_fig:
+                result["figure_paths"] = [saved_fig]
+                result["figure_items"] = [{
+                    "path": saved_fig,
+                    "caption": "Figure 1",
+                    "source_url": fig_url,
+                }]
+        if result["downloaded_pdf"] and (not fig_save_path or result["figure_paths"]):
+            return result
 
     # ── patchright pipeline ───────────────────────────────────────────────────
     try:

@@ -19,7 +19,7 @@ description: |
 
 ### 浏览器（用于绕过 Cloudflare 等验证）
 
-**默认（无需额外配置）**：脚本自动使用 patchright `launch_persistent_context`，为每个出版商创建独立的持久化 profile（存于系统临时目录，如 `pdf_fetcher_pw_science_org/`）。Cloudflare Turnstile **自动通过**，首次约 10-20 秒，之后因 cf_clearance cookie 复用约 3-5 秒，无需人工操作。
+**默认（无需额外配置）**：脚本自动使用 patchright `launch_persistent_context`，为每个出版商创建独立的持久化 profile（存于系统临时目录，如 `pdf_fetcher_pw_science_org/`）。持久化 cookie 可减少重复验证，但显式 CAPTCHA、Turnstile 复选框或 “Are you a robot?” 仍需要人工处理；无人值守任务必须报告并回退，不能假定自动通过。
 
 **可选（如需机构订阅 cookies）**：设置 `PAPER_READER_CDP_URL` 指向已登录机构账户的 Chrome 实例：
 
