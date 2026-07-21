@@ -58,11 +58,11 @@ def mineru_enabled() -> bool:
 
 
 def mineru_timeout_seconds() -> int:
-    raw = normalize_whitespace(os.environ.get("PAPER_READER_MINERU_TIMEOUT", "300"))
+    raw = normalize_whitespace(os.environ.get("PAPER_READER_MINERU_TIMEOUT", "900"))
     try:
         return max(30, min(1800, int(raw)))
     except Exception:
-        return 300
+        return 900
 
 
 def paper_reader_mineru_cleanup_enabled() -> bool:
@@ -80,6 +80,26 @@ def strip_mineru_markdown_noise(text: str) -> str:
     return normalize_whitespace(text)
 
 
+def _load_mineru_markdown(out_root: Path) -> dict:
+    md_files = sorted(
+        out_root.rglob("*.md"),
+        key=lambda p: p.stat().st_size if p.exists() else 0,
+        reverse=True,
+    )
+    for md_path in md_files:
+        raw = md_path.read_text(encoding="utf-8", errors="replace")
+        parsed = strip_mineru_markdown_noise(raw)
+        if len(parsed) >= 1500 or ("abstract" in parsed.lower() and len(parsed) >= 800):
+            return {
+                "text": parsed[:60000],
+                "markdown_path": str(md_path),
+                "output_dir": str(out_root),
+                "summary_mode": "基于 MinerU PDF→Markdown 全文提取",
+                "acquisition_path": "MinerU PDF→Markdown text + publisher/PDF figures",
+            }
+    return {}
+
+
 def extract_pdf_text_with_mineru(
     pdf_path: Path,
     identifier: str = "",
@@ -94,16 +114,19 @@ def extract_pdf_text_with_mineru(
         pdf_path = Path(pdf_path)
         if not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
             return {}
-        finder = find_tool_func or shutil.which
-        mineru = finder("mineru.exe") or finder("mineru") or shutil.which("mineru")
-        if not mineru:
-            return {}
         safe_ident = safe_filename(identifier or pdf_path.stem or "paper")
         if pdf_save_dir:
             out_root = pdf_save_dir / "mineru" / safe_ident
         else:
             out_root = Path(tempfile.mkdtemp(prefix="paper_reader_mineru_")) / safe_ident
         out_root.mkdir(parents=True, exist_ok=True)
+        cached = _load_mineru_markdown(out_root)
+        if cached:
+            return cached
+        finder = find_tool_func or shutil.which
+        mineru = finder("mineru.exe") or finder("mineru") or shutil.which("mineru")
+        if not mineru:
+            return {}
         method = normalize_whitespace(os.environ.get("PAPER_READER_MINERU_METHOD", "auto")) or "auto"
         backend = normalize_whitespace(os.environ.get("PAPER_READER_MINERU_BACKEND", "pipeline")) or "pipeline"
         cmd = [mineru, "-p", str(pdf_path), "-o", str(out_root), "--method", method, "--backend", backend]
@@ -119,18 +142,7 @@ def extract_pdf_text_with_mineru(
             if normalize_whitespace(os.environ.get("PAPER_READER_MINERU_DEBUG", "")):
                 print(f"[paper-reader] MinerU failed for {pdf_path.name}: {result.stderr[-500:]}", file=sys.stderr)
             return {}
-        md_files = sorted(out_root.rglob("*.md"), key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
-        for md_path in md_files:
-            raw = md_path.read_text(encoding="utf-8", errors="replace")
-            parsed = strip_mineru_markdown_noise(raw)
-            if len(parsed) >= 1500 or ("abstract" in parsed.lower() and len(parsed) >= 800):
-                return {
-                    "text": parsed[:60000],
-                    "markdown_path": str(md_path),
-                    "output_dir": str(out_root),
-                    "summary_mode": "?? MinerU PDF->Markdown ????",
-                    "acquisition_path": "MinerU PDF->Markdown text + legacy/publisher figures",
-                }
+        return _load_mineru_markdown(out_root)
     except subprocess.TimeoutExpired:
         if normalize_whitespace(os.environ.get("PAPER_READER_MINERU_DEBUG", "")):
             print(f"[paper-reader] MinerU timed out for {pdf_path}", file=sys.stderr)

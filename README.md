@@ -77,6 +77,7 @@ ObsidianVault/
 强烈推荐：
 
 - **MinerU**。这个项目不把 MinerU 打包进仓库，但如果本机能找到 `mineru` 命令，`paper-reader` 会优先用它提取 PDF 文本。实际使用下来，MinerU 从论文 PDF 里得到的 Markdown 往往比普通 PDF parser 更干净，尤其是双栏论文、复杂版式和长正文；这会直接影响必读笔记质量。
+  默认超时为 900 秒，并复用已存在的合格 MinerU Markdown。PyPDF/pypdf 只负责 PDF 结构与页数校验，以及 MinerU、pdftotext 都失败后的末级文本回退，不是默认正文提取器。
 
 可选但有用：
 

@@ -102,7 +102,7 @@ patchright 抓取策略（优先级）：
 - PDF 正文提取现在采用 MinerU-first：优先调用本机 `mineru` 将 PDF 转成 Markdown，再把 Markdown 正文作为全文材料。
 - MinerU 只用于文本，不使用 MinerU 切出的图片作为 `figure_paths`，因为复合图容易被拆成多个局部图。
 - 如果 MinerU 不存在、失败、超时或输出过短，自动回退到旧路径：`pdftotext` -> `pypdf` -> PDF raw stream。
-- 可用 `PAPER_READER_PDF_TEXT_ENGINE=legacy` 临时关闭 MinerU；`PAPER_READER_MINERU_TIMEOUT` 可调超时时间，默认 300 秒。
+- 可用 `PAPER_READER_PDF_TEXT_ENGINE=legacy` 临时关闭 MinerU；`PAPER_READER_MINERU_TIMEOUT` 可调超时时间，默认 900 秒。已有合格 MinerU Markdown 时会直接复用缓存，不重复运行模型。
 - 每篇笔记成功保存后，`paper-reader` 会自动删除该篇 `mineru_output_dir` 下的非 `.md` 中间文件（PDF 副本、JSON、切图等），只保留 MinerU Markdown 文本证据。调试时可设置 `PAPER_READER_KEEP_MINERU_ARTIFACTS=1` 临时保留完整输出。
 
 - 直接读取 PDF 并提取可见文本片段
